@@ -1,0 +1,241 @@
+asgi{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <div class="room-head">
+    <div>
+      <div class="muted">Sala</div>
+      <div class="code">{{ game.code }}</div>
+    </div>
+    <button id="copy">Copiar link de invitación</button>
+  </div>
+  <p>Jugás como <strong>{{ player.nickname }}</strong> · <span id="status">Conectando…</span></p>
+  <p id="error" class="error"></p>
+</div>
+
+<div id="result" hidden></div>
+<div class="card" id="main"></div>
+<div class="card"><h3>Jugadores</h3><ul id="players"></ul></div></ul><p id="controls"></p></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+      const inviteLink = location.origin + "{% url 'game:join' game.code %}";
+  $("copy").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      $("copy").textContent = "¡Copiado!";
+      setTimeout(() => { $("copy").textContent = "Copiar link de invitación"; }, 2000);
+    } catch {
+      prompt("Copiá el link:", inviteLink);  // si el navegador no deja usar el portapapeles
+    }
+  };
+
+  let ws = null, state = null, selected = [], errorTimer = null;
+
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  // Siempre textContent: nunca innerHTML con texto de usuarios (evita XSS)
+  function node(tag, text, cls) {
+    const n = document.createElement(tag);
+    if (text !== undefined) n.textContent = text;
+    if (cls) n.className = cls;
+    return n;
+  }
+
+  function cardNode(text, cls, onClick) {
+    const n = node("div", text, "c " + cls);
+    if (onClick) { n.classList.add("clickable"); n.onclick = onClick; }
+    return n;
+  }
+
+  function showError(msg) {
+    $("error").textContent = msg;
+    clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => { $("error").textContent = ""; }, 4000);
+  }
+
+  function toggle(id, pick) {
+    const i = selected.indexOf(id);
+    if (i >= 0) selected.splice(i, 1);
+    else { selected.push(id); if (selected.length > pick) selected.shift(); }
+    renderMain(state);
+  }
+
+  function renderResult(s) {
+    const r = $("result");
+    if (!s.last_result) { r.hidden = true; return; }
+    const l = s.last_result;
+    r.hidden = false;
+    r.textContent = `Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.join(" / ")}`;
+  }
+
+  function renderPlayers(s) {
+    const ul = $("players");
+    ul.replaceChildren();
+    for (const p of s.players) {
+      let t = p.nickname;
+      if (p.is_host) t += " 👑";
+      if (p.is_judge) t += " ⚖️";
+      if (s.state === "playing" && !p.is_judge) t += p.has_played ? " ✅" : " ⏳";
+      if (s.state !== "lobby") t += ` — ${p.score} pts`;
+      if (!p.online) t += " · 🔌 desconectado";
+      const li = node("li", t + " ");
+      if (s.me.is_host && p.id !== s.me.id && s.state !== "finished") {
+        const b = node("button", "Expulsar");
+        b.onclick = () => {
+          if (confirm(`¿Expulsar a ${p.nickname}?`)) send({ action: "kick", player: p.id });
+        };
+        li.append(b);
+      }
+      ul.appendChild(li);
+    }
+  }
+
+  function renderControls(s) {
+    const box = $("controls");
+    box.replaceChildren();
+
+    const host = s.players.find((p) => p.is_host);
+    if (!s.me.is_host && host && !host.online) {
+      const b = node("button", "El host se desconectó: tomar el rol de host");
+      b.onclick = () => send({ action: "claim_host" });
+      box.append(b, " ");
+    }
+    if (s.me.is_host && (s.state === "playing" || s.state === "judging")) {
+      const b = node("button", "Saltear al juez actual");
+      b.onclick = () => {
+        if (confirm("Se cancela la ronda y pasa a otro juez. ¿Seguro?")) send({ action: "skip_judge" });
+      };
+      box.append(b, " ");
+    }
+    if (s.me.is_host && s.state === "playing" && s.players.some((p) => p.has_played)) {
+      const b = node("button", "Seguir sin los que faltan");
+      b.onclick = () => send({ action: "force_judging" });
+      box.append(b, " ");
+    }
+    const leave = node("button", "Salir de la sala");
+    leave.onclick = () => { if (confirm("¿Salir de la sala?")) send({ action: "leave" }); };
+    box.append(leave);
+  }
+
+  function renderMain(s) {
+    const main = $("main");
+    main.replaceChildren();
+
+    if (s.state === "lobby") {
+      main.append(node("p", `Esperando jugadores (mínimo ${s.min_players}).`));
+      if (s.me.is_host) {
+        const b = node("button", "Empezar partida");
+        b.disabled = s.players.length < s.min_players;
+        b.onclick = () => send({ action: "start_game" });
+        main.append(b);
+      } else {
+        main.append(node("p", "Esperá a que el host empiece la partida."));
+      }
+      return;
+    }
+
+    if (s.state === "finished") {
+      const medals = ["🥇", "🥈", "🥉"];
+      const ranking = [...s.players].sort((a, b) => b.score - a.score);
+      main.append(node("h3", "🏆 Partida terminada"));
+      const ol = node("ul");
+      ranking.forEach((p, i) => ol.append(node("li", `${medals[i] || "▫️"} ${p.nickname} — ${p.score} pts`)));
+      main.append(ol);
+      const a = node("a", "Volver al inicio");
+      a.href = "{% url 'game:home' %}";
+      main.append(a);
+      return;
+    }
+
+    main.append(node("h3", `Ronda ${s.round} · se gana con ${s.points_to_win} puntos`));
+    main.append(cardNode(s.black.text, "black"));
+
+    if (s.state === "playing") {
+      if (s.me.is_judge) {
+        main.append(node("p", "⚖️ Sos el juez de esta ronda. Esperá a que los demás jueguen."));
+        return;
+      }
+      if (s.me.has_played) {
+        main.append(node("p", "Ya jugaste. Esperando al resto…"));
+        return;
+      }
+      const pick = s.black.pick;
+      main.append(node("p", `Tu mano: elegí ${pick} carta${pick > 1 ? "s" : ""}`));
+      const hand = node("div", undefined, "cards");
+      for (const c of s.me.hand) {
+        const idx = selected.indexOf(c.id);
+        const label = idx >= 0 && pick > 1 ? `${idx + 1}. ${c.text}` : c.text;
+        hand.append(cardNode(label, "white" + (idx >= 0 ? " selected" : ""), () => toggle(c.id, pick)));
+      }
+      main.append(hand);
+      const b = node("button", "Jugar");
+      b.disabled = selected.length !== pick;
+      b.onclick = () => { send({ action: "play_cards", cards: selected }); selected = []; };
+      main.append(b);
+    }
+
+    if (s.state === "judging") {
+      main.append(node("p", s.me.is_judge ? "Elegí la mejor respuesta:" : "El juez está eligiendo…"));
+      for (const sub of s.submissions) {
+        const box = node("div", undefined, "card");
+        const row = node("div", undefined, "cards");
+        sub.cards.forEach((t) => row.append(cardNode(t, "white")));
+        box.append(row);
+        if (s.me.is_judge) {
+          const b = node("button", "Elegir esta");
+          b.onclick = () => send({ action: "pick_winner", submission: sub.id });
+          box.append(b);
+        }
+        main.append(box);
+      }
+    }
+  }
+
+  function render(s) {
+    state = s;
+    const ids = new Set(s.me.hand.map((c) => c.id));
+    selected = selected.filter((id) => ids.has(id));
+    renderResult(s);
+    renderPlayers(s);
+    renderControls(s);   // <-- nueva
+    renderMain(s);
+  }
+
+  let pingTimer = null;
+
+  function connect() {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${scheme}://${location.host}/ws/sala/{{ game.code }}/`);
+
+    ws.onopen = () => {
+      $("status").textContent = "Conectado ✅";
+      clearInterval(pingTimer);
+      pingTimer = setInterval(() => send({ action: "ping" }), 20000);
+    };
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "state") render(msg);
+      else if (msg.type === "error") showError(msg.message);
+    };
+    ws.onclose = (e) => {
+      clearInterval(pingTimer);
+      if (e.code === 4403 || e.code === 4404) {  // sin reconexión: ya no pertenece a la sala
+        $("status").textContent = e.code === 4404 ? "Ya no estás en esta sala." : "No pertenecés a esta sala.";
+        $("main").replaceChildren();
+        $("players").replaceChildren();
+        $("controls").replaceChildren();
+        const a = node("a", "Volver al inicio");
+        a.href = "{% url 'game:home' %}";
+        $("main").append(a);
+        return;
+      }
+      $("status").textContent = "Desconectado. Reintentando…";
+      setTimeout(connect, 2000);
+    };
+  }
+  connect();
+</script>
+{% endblock %}

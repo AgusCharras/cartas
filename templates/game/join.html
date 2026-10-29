@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Sala {{ game.code }}</h2>
+  <p>Jugadores adentro: {{ game.players.count }}/{{ game.max_players }}</p>
+  <form method="post">{% csrf_token %}
+    {{ form.nickname.label_tag }} {{ form.nickname }}
+    {% for e in form.nickname.errors %}<p class="error">{{ e }}</p>{% endfor %}
+    <button>Entrar a la sala</button>
+  </form>
+</div>
+{% endblock %}

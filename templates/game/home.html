@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Crear sala</h2>
+  <form method="post">{% csrf_token %}
+    {% for deck in decks %}
+      <label><input type="checkbox" name="decks" value="{{ deck.id }}" checked> {{ deck.name }}</label><br>
+    {% empty %}
+      <p>No hay mazos disponibles. Cargá uno desde el admin o importá uno.</p>
+    {% endfor %}
+    <br><button name="create" value="1">Crear sala</button>
+  </form>
+  <p><a href="{% url 'decks:import' %}">Importar un mazo</a></p>
+</div>
+
+<div class="card">
+  <h2>Entrar con código</h2>
+  <form method="post">{% csrf_token %}
+    <input name="code" maxlength="6" placeholder="ABC12" required>
+    <button>Entrar</button>
+  </form>
+</div>
+{% endblock %}
