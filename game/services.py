@@ -2,16 +2,17 @@ import random
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import Count, F, Q
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
-from decks.models import Card
+from decks.models import Card, Deck
 from .models import Game, GameCard, Player
 
 HAND_SIZE = 7
 MIN_PLAYERS = 3        # para empezar la partida
 MIN_TO_CONTINUE = 2    # si quedan menos, la partida termina
+MAX_DECKS_PER_GAME = 8
 GRACE = timedelta(seconds=20)   # cuánto debe llevar desconectado el host para poder tomarle el rol
 STALE = timedelta(seconds=90)   # sin latidos por este tiempo = se lo considera desconectado
 
@@ -62,7 +63,7 @@ def _deal(game, player, n):
     GameCard.objects.bulk_update(drawn, ["status", "player"])
 
 
-# ---------- acciones ----------
+# ---------- acciones de la partida ----------
 
 @transaction.atomic
 def start_game(game_id, player_id):
@@ -140,6 +141,38 @@ def play_cards(game_id, player_id, card_ids):
 
 
 @transaction.atomic
+def reroll_card(game_id, player_id, card_id):
+    game = _lock(game_id)  # el lock evita que dos clics rápidos gasten dos cambios
+    if game.state != Game.PLAYING:
+        raise GameError("Solo podés cambiar cartas mientras se juega la ronda.")
+
+    player = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
+    if player is None:
+        raise GameError("Ya no estás en esta sala.")
+    if player.id == game.judge_id:
+        raise GameError("El juez no necesita cambiar cartas.")
+    if game.cards.filter(status=GameCard.PLAYED, player=player).exists():
+        raise GameError("Ya jugaste en esta ronda.")
+    if player.rerolls_left <= 0:
+        raise GameError("No te quedan cambios.")
+
+    old = game.cards.filter(pk=card_id, status=GameCard.HAND, player=player).first()
+    if old is None:
+        raise GameError("Esa carta no está en tu mano.")
+
+    # Primero se roba y después se descarta: así nunca te vuelve la misma carta
+    new = _draw(game, Card.WHITE, 1)[0]
+    new.status, new.player = GameCard.HAND, player
+    new.save(update_fields=["status", "player"])
+
+    old.status, old.player, old.slot = GameCard.DISCARD, None, None
+    old.save(update_fields=["status", "player", "slot"])
+
+    player.rerolls_left -= 1
+    player.save(update_fields=["rerolls_left"])
+
+
+@transaction.atomic
 def pick_winner(game_id, player_id, submission_id):
     game = _lock(game_id)
     if game.state != Game.JUDGING:
@@ -187,67 +220,7 @@ def pick_winner(game_id, player_id, submission_id):
     game.save()
 
 
-# ---------- lo que ve cada jugador ----------
-
-def snapshot(game_id, player_id):
-    """Estado PERSONALIZADO para un jugador. Devuelve None si ya no pertenece a la partida."""
-    game = Game.objects.filter(pk=game_id).first()
-    if game is None:
-        return None
-    players = list(game.players.order_by("joined_at", "id"))
-    me = next((p for p in players if p.id == player_id), None)
-    if me is None:
-        return None
-
-    now = timezone.now()
-    in_round = game.state in (Game.PLAYING, Game.JUDGING)
-    played_ids = set(game.cards.filter(status=GameCard.PLAYED).values_list("player_id", flat=True))
-
-    black = None
-    if in_round:
-        card = _current_black(game).card
-        black = {"text": card.text, "pick": card.pick}
-
-    hand = []
-    if in_round:
-        hand = [{"id": gc.id, "text": gc.card.text}
-                for gc in game.cards.filter(status=GameCard.HAND, player_id=player_id)
-                .select_related("card").order_by("id")]
-
-    submissions = []
-    if game.state == Game.JUDGING:
-        by_player = {}
-        for gc in game.cards.filter(status=GameCard.PLAYED).select_related("card").order_by("slot"):
-            by_player.setdefault(gc.player_id, []).append(gc)
-        for cards in sorted(by_player.values(), key=lambda cs: cs[0].position):
-            submissions.append({"id": cards[0].id, "cards": [c.card.text for c in cards]})
-
-    return {
-        "type": "state",
-        "state": game.state,
-        "round": game.round_number,
-        "points_to_win": game.points_to_win,
-        "min_players": MIN_PLAYERS,
-        "me": {
-            "id": me.id,
-            "nickname": me.nickname,
-            "is_host": me.is_host,
-            "is_judge": me.id == game.judge_id,
-            "has_played": me.id in played_ids,
-            "hand": hand,
-        },
-        "players": [
-            {"id": p.id, "nickname": p.nickname, "is_host": p.is_host, "score": p.score,
-             "is_judge": p.id == game.judge_id, "has_played": p.id in played_ids,
-             "online": is_online(p, now)}
-            for p in players
-        ],
-        "black": black,
-        "submissions": submissions,
-        "last_result": game.last_result,
-    }
-    
-    # ---------- presencia ----------
+# ---------- presencia ----------
 
 def is_online(player, now=None):
     now = now or timezone.now()
@@ -393,3 +366,128 @@ def claim_host(game_id, player_id):
     game.players.filter(is_host=True).update(is_host=False)
     me.is_host = True
     me.save(update_fields=["is_host"])
+
+
+# ---------- mazos de la sala (solo en el lobby) ----------
+
+def _can_use_deck(deck, token, by_code):
+    if deck.is_public:
+        return True
+    if token and deck.uploader_token and str(deck.uploader_token) == str(token):
+        return True
+    return by_code and deck.is_shared
+
+
+@transaction.atomic
+def add_deck(game_id, player_id, deck_id, code, token):
+    game = _lock(game_id)
+    _require_host(game, player_id)
+    if game.state != Game.LOBBY:
+        raise GameError("Los mazos solo se pueden cambiar antes de empezar.")
+
+    if deck_id is not None:
+        deck = Deck.objects.filter(pk=deck_id).first()
+    else:
+        deck = Deck.objects.filter(share_code=code.strip().upper()).first()
+    # Mismo mensaje si no existe o no tenés permiso: no revela mazos privados
+    if deck is None or not _can_use_deck(deck, token, by_code=deck_id is None):
+        raise GameError("No encontré ese mazo. Revisá el código.")
+    if game.decks.filter(pk=deck.pk).exists():
+        raise GameError("Ese mazo ya está en la sala.")
+    if game.decks.count() >= MAX_DECKS_PER_GAME:
+        raise GameError(f"Máximo {MAX_DECKS_PER_GAME} mazos por sala.")
+    game.decks.add(deck)
+
+
+@transaction.atomic
+def remove_deck(game_id, player_id, deck_id):
+    game = _lock(game_id)
+    _require_host(game, player_id)
+    if game.state != Game.LOBBY:
+        raise GameError("Los mazos solo se pueden cambiar antes de empezar.")
+    game.decks.remove(deck_id)
+
+
+# ---------- chat ----------
+
+def chat_author(game_id, player_id):
+    """Apodo del jugador para el chat (None si ya no está en la sala)."""
+    return (Player.objects.filter(pk=player_id, game_id=game_id)
+            .values_list("nickname", flat=True).first())
+
+
+# ---------- lo que ve cada jugador ----------
+
+def snapshot(game_id, player_id):
+    """Estado PERSONALIZADO para un jugador. Devuelve None si ya no pertenece a la partida.
+    Nunca incluye tokens ni manos ajenas."""
+    game = Game.objects.filter(pk=game_id).first()
+    if game is None:
+        return None
+    players = list(game.players.order_by("joined_at", "id"))
+    me = next((p for p in players if p.id == player_id), None)
+    if me is None:
+        return None
+
+    now = timezone.now()
+    in_round = game.state in (Game.PLAYING, Game.JUDGING)
+    played_ids = set(game.cards.filter(status=GameCard.PLAYED).values_list("player_id", flat=True))
+
+    black = None
+    if in_round:
+        card = _current_black(game).card
+        black = {"text": card.text, "pick": card.pick}
+
+    hand = []
+    if in_round:
+        hand = [{"id": gc.id, "text": gc.card.text}
+                for gc in game.cards.filter(status=GameCard.HAND, player_id=player_id)
+                .select_related("card").order_by("id")]
+
+    submissions = []
+    if game.state == Game.JUDGING:
+        by_player = {}
+        for gc in game.cards.filter(status=GameCard.PLAYED).select_related("card").order_by("slot"):
+            by_player.setdefault(gc.player_id, []).append(gc)
+        # El id de la jugada es el de su primera carta: no revela quién la jugó.
+        # Se ordenan por 'position' (aleatoria), así el orden no delata a nadie.
+        for cards in sorted(by_player.values(), key=lambda cs: cs[0].position):
+            submissions.append({"id": cards[0].id, "cards": [c.card.text for c in cards]})
+
+    decks = []
+    if game.state == Game.LOBBY:
+        decks = [
+            {"id": d.id, "name": d.name, "whites": d.n_white, "blacks": d.n_black}
+            for d in game.decks.annotate(
+                n_white=Count("cards", filter=Q(cards__kind=Card.WHITE)),
+                n_black=Count("cards", filter=Q(cards__kind=Card.BLACK)),
+            ).order_by("name")
+        ]
+
+    return {
+        "type": "state",
+        "state": game.state,
+        "round": game.round_number,
+        "points_to_win": game.points_to_win,
+        "min_players": MIN_PLAYERS,
+        "me": {
+            "id": me.id,
+            "nickname": me.nickname,
+            "is_host": me.is_host,
+            "is_judge": me.id == game.judge_id,
+            "has_played": me.id in played_ids,
+            "rerolls_left": me.rerolls_left,
+            "hand": hand,
+        },
+        "players": [
+            {"id": p.id, "nickname": p.nickname, "is_host": p.is_host, "score": p.score,
+             "is_judge": p.id == game.judge_id, "has_played": p.id in played_ids,
+             "online": is_online(p, now)}
+            for p in players
+        ],
+        "black": black,
+        "submissions": submissions,
+        "decks": decks,
+        "needed_whites": len(players) * (HAND_SIZE + 1),
+        "last_result": game.last_result,
+    }

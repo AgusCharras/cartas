@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Crear mazo</h2>
+  <form method="post">{% csrf_token %}
+    {{ form.non_field_errors }}
+    <p><input name="name" placeholder="Nombre del mazo" maxlength="100" required
+              value="{{ form.name.value|default:'' }}"></p>
+    {% for e in form.name.errors %}<p class="error">{{ e }}</p>{% endfor %}
+    <p><input name="description" placeholder="Descripción (opcional)" maxlength="300"
+              style="width:100%" value="{{ form.description.value|default:'' }}"></p>
+    <button>Crear y agregar cartas</button>
+  </form>
+</div>
+{% endblock %}

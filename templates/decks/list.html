@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="room-head">
+    <h2>Mis mazos</h2>
+    <div>
+      <a class="btn" href="{% url 'decks:new' %}">+ Crear mazo</a>
+      <a class="btn ghost" href="{% url 'decks:import' %}">Importar JSON</a>
+    </div>
+  </div>
+  {% for d in decks %}
+    <div class="card">
+      <strong>{{ d.name }}</strong>{% if d.is_shared %}<span class="tag">compartido</span>{% endif %}
+      <p class="muted">{{ d.blacks }} negras · {{ d.whites }} blancas</p>
+      <a class="btn" href="{% url 'decks:edit' d.pk %}">Editar</a>
+      <a class="btn ghost" href="{% url 'decks:export' d.pk %}">Exportar JSON</a>
+    </div>
+  {% empty %}
+    <p>Todavía no tenés mazos. Creá uno o importá un JSON.</p>
+  {% endfor %}
+  <p class="muted">Tus mazos quedan guardados en este navegador. Exportalos para tener un respaldo.
+    Los que pasan 30 días sin editarse ni usarse se borran.</p>
+</div>
+{% endblock %}

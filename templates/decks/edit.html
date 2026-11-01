@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% load static %}
+{% block content %}
+<div class="card">
+  <div class="room-head">
+    <h2>{{ deck.name }}</h2>
+    <a class="btn ghost" href="{% url 'decks:list' %}">← Mis mazos</a>
+  </div>
+  <p class="muted">{{ blacks|length }} negras · {{ whites|length }} blancas</p>
+  {% if blacks|length < 1 or whites|length < 20 %}
+    <p class="muted">Para poder reimportarlo desde un JSON necesita al menos 1 negra y 20 blancas.
+      Para jugar, hacen falta unas 8 blancas por jugador.</p>
+  {% endif %}
+  {% for e in errors %}<p class="error">{{ e }}</p>{% endfor %}
+</div>
+
+<div class="card">
+  <h3>Datos del mazo</h3>
+  <form method="post">{% csrf_token %}
+    <input type="hidden" name="action" value="details">
+    <p><input name="name" value="{{ deck.name }}" maxlength="100" required></p>
+    <p><input name="description" value="{{ deck.description }}" maxlength="300"
+              placeholder="Descripción (opcional)" style="width:100%"></p>
+    <button>Guardar</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Agregar cartas</h3>
+  <p class="muted">Una carta por línea. En las negras usá <code>_</code> para el hueco:
+    con 2 o 3 huecos la carta pide 2 o 3 respuestas. Las repetidas se omiten.
+    A la derecha ves cómo va quedando cada carta.</p>
+  <form method="post">{% csrf_token %}
+    <input type="hidden" name="action" value="add_cards">
+
+    <h4>Blancas (respuestas)</h4>
+    <div class="editor-split">
+      <textarea id="white-input" name="white" placeholder="Un mate lavado&#10;El dólar blue">{{ values.white }}</textarea>
+      <div class="previewbox">
+        <div class="muted" id="white-count"></div>
+        <div class="deckgrid" id="white-preview"></div>
+      </div>
+    </div>
+
+    <h4>Negras (preguntas)</h4>
+    <div class="editor-split">
+      <textarea id="black-input" name="black" placeholder="¿Qué me trajo la abuela de Mar del Plata? _&#10;El secreto de un buen domingo es _ con _.">{{ values.black }}</textarea>
+      <div class="previewbox">
+        <div class="muted" id="black-count"></div>
+        <div class="deckgrid" id="black-preview"></div>
+      </div>
+    </div>
+
+    <p><button>Agregar cartas</button></p>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Compartir</h3>
+  {% if deck.is_shared and share_url %}
+    <p>Quien tenga este código o link puede ver el mazo y cargarlo en su sala:</p>
+    <p class="code" style="font-size:1.6rem">{{ deck.share_code }}</p>
+    <p><input value="{{ share_url }}" readonly onclick="this.select()" style="width:100%"></p>
+  {% else %}
+    <p class="muted">Ahora es privado: solo vos podés usarlo.</p>
+  {% endif %}
+  <form method="post">{% csrf_token %}
+    <input type="hidden" name="action" value="toggle_share">
+    <button>{% if deck.is_shared %}Dejar de compartir{% else %}Compartir{% endif %}</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Cartas del mazo</h3>
+  <p class="muted">Tocá las cartas que quieras borrar y confirmá con el botón de abajo.</p>
+  <form method="post">{% csrf_token %}
+    <input type="hidden" name="action" value="delete_cards">
+
+    <h4>Negras ({{ blacks|length }})</h4>
+    <div class="deckgrid">
+      {% for c in blacks %}
+        <label class="pick">
+          <input type="checkbox" name="delete" value="{{ c.id }}">
+          <span class="c black" data-auto data-brand="{% if c.pick > 1 %}Cartas Arg · elige {{ c.pick }}{% else %}Cartas Arg{% endif %}"><span class="t">{{ c.text }}</span></span>
+        </label>
+      {% empty %}<p class="muted">Sin cartas negras.</p>{% endfor %}
+    </div>
+
+    <h4>Blancas ({{ whites|length }})</h4>
+    <div class="deckgrid">
+      {% for c in whites %}
+        <label class="pick">
+          <input type="checkbox" name="delete" value="{{ c.id }}">
+          <span class="c white" data-auto data-brand="ARG"><span class="t">{{ c.text }}</span></span>
+        </label>
+      {% empty %}<p class="muted">Sin cartas blancas.</p>{% endfor %}
+    </div>
+
+    <p><button class="danger">Borrar seleccionadas</button></p>
+  </form>
+</div>
+
+<div class="card">
+  <a class="btn" href="{% url 'decks:export' deck.pk %}">⬇ Exportar JSON</a>
+  <form method="post" action="{% url 'decks:delete' deck.pk %}" style="display:inline"
+        onsubmit="return confirm('¿Borrar el mazo completo?');">{% csrf_token %}
+    <button class="danger">Borrar mazo</button>
+  </form>
+</div>
+
+<script src="{% static 'js/cards.js' %}?v=1"></script>
+<script>
+  CardsUI.bindPreview("white-input", "white-preview", "white", "white-count");
+  CardsUI.bindPreview("black-input", "black-preview", "black", "black-count");
+  CardsUI.enhance();
+</script>
+{% endblock %}

@@ -13,6 +13,7 @@ CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 def generate_code():
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(5))
 
+REROLLS_PER_GAME = 2
 
 class Game(models.Model):
     LOBBY, PLAYING, JUDGING, FINISHED = "lobby", "playing", "judging", "finished"
@@ -45,6 +46,7 @@ class Player(models.Model):
     joined_at = models.DateTimeField(auto_now_add=True)
     connections = models.PositiveSmallIntegerField(default=0)  # pestañas/sockets abiertos
     last_seen = models.DateTimeField(default=timezone.now)
+    rerolls_left = models.PositiveSmallIntegerField(default=REROLLS_PER_GAME)
 
     class Meta:
         constraints = [

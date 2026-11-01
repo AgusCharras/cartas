@@ -15,6 +15,8 @@ SECRET_KEY = os.environ.get("SECRET_KEY") or ("dev-solo-para-local" if DEBUG els
 if not SECRET_KEY:
     raise ImproperlyConfigured("Falta la variable de entorno SECRET_KEY.")
 
+#m7np%^%@ku(t4h9*5v=c+-j&v2m6x3m^!29$!mhik+lld5vq9a
+
 ALLOWED_HOSTS = [h for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h]
 if DEBUG and not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
@@ -121,6 +123,8 @@ USE_I18N = True
 
 USE_TZ = True
 
+SESSION_COOKIE_AGE = 60 * 60 * 24 * 180   # 180 días
+SESSION_SAVE_EVERY_REQUEST = True          # cada visita renueva el plazo
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/

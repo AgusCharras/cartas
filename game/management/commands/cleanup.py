@@ -13,7 +13,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--game-hours", type=int, default=6)
-        parser.add_argument("--deck-days", type=int, default=30)
+        parser.add_argument("--deck-days", type=int, default=90)
 
     def handle(self, *args, **opts):
         now = timezone.now()

@@ -1,3 +1,5 @@
+import time
+
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.exceptions import ObjectDoesNotExist
@@ -17,7 +19,7 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
         if ids is None:
             await self.close(code=4403)  # no pertenece a esta sala
             return
-        self.game_id, self.player_id = ids
+        self.game_id, self.player_id, self.uploader_token = ids
 
         await self.channel_layer.group_add(self.group, self.channel_name)
         await self.accept()
@@ -41,6 +43,10 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                 await self.broadcast()
             return
 
+        if action == "chat":  # el chat no toca la base ni refresca el estado del juego
+            await self.handle_chat(content.get("text"))
+            return
+
         try:
             if action == "start_game":
                 await self.run(services.start_game)
@@ -51,6 +57,12 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                         or not all(type(i) is int for i in ids)):
                     raise GameError("Jugada inválida.")
                 await self.run(services.play_cards, ids)
+
+            elif action == "reroll":
+                cid = content.get("card")
+                if type(cid) is not int:
+                    raise GameError("Carta inválida.")
+                await self.run(services.reroll_card, cid)
 
             elif action == "pick_winner":
                 sid = content.get("submission")
@@ -76,6 +88,21 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             elif action == "claim_host":
                 await self.run(services.claim_host)
 
+            elif action == "add_deck":
+                deck_id, code = content.get("deck"), content.get("code")
+                if type(deck_id) is int:
+                    await self.run(services.add_deck, deck_id, None, self.uploader_token)
+                elif isinstance(code, str) and 4 <= len(code.strip()) <= 12:
+                    await self.run(services.add_deck, None, code, self.uploader_token)
+                else:
+                    raise GameError("Elegí un mazo de la lista o escribí un código válido.")
+
+            elif action == "remove_deck":
+                deck_id = content.get("deck")
+                if type(deck_id) is not int:
+                    raise GameError("Mazo inválido.")
+                await self.run(services.remove_deck, deck_id)
+
             else:
                 return
         except GameError as e:
@@ -96,6 +123,31 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             return
         await self.send_json(state)
 
+    # ---- chat (efímero: no se guarda en la base) ----
+
+    async def handle_chat(self, text):
+        if not isinstance(text, str):
+            return
+        text = " ".join(text.split())[:200]
+        if not text:
+            return
+        now = time.monotonic()
+        last = getattr(self, "last_chat", None)
+        if last is not None and now - last < 1:  # máximo 1 mensaje por segundo
+            await self.send_json({"type": "error", "message": "Esperá un segundo antes de escribir de nuevo."})
+            return
+        self.last_chat = now
+
+        nick = await self.run(services.chat_author)
+        if nick is None:
+            await self.close(code=4404)
+            return
+        await self.channel_layer.group_send(
+            self.group, {"type": "chat.message", "nick": nick, "text": text})
+
+    async def chat_message(self, event):
+        await self.send_json({"type": "chat", "nick": event["nick"], "text": event["text"]})
+
     # ---- helpers ----
 
     async def broadcast(self):
@@ -106,8 +158,11 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def get_ids(self):
-        token = self.scope["session"].get("player_tokens", {}).get(self.code)
+        session = self.scope["session"]
+        token = session.get("player_tokens", {}).get(self.code)
         if not token:
             return None
         player = Player.objects.filter(game__code=self.code, token=token).first()
-        return (player.game_id, player.id) if player else None
+        if not player:
+            return None
+        return (player.game_id, player.id, session.get("uploader_token"))

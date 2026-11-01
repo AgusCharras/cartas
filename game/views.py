@@ -1,13 +1,12 @@
-
-from django.shortcuts import render, redirect, get_object_or_404
-
-from django.db import IntegrityError
 from django import forms
+from django.db import IntegrityError
+from django.db.models import Q
+from django.shortcuts import get_object_or_404, redirect, render
 
+from config.ratelimit import rate_limit
 from decks.models import Deck
 from .models import Game, Player
 from .session import get_player, remember_player
-from django.db.models import Q
 
 
 class NicknameForm(forms.Form):
@@ -15,11 +14,16 @@ class NicknameForm(forms.Form):
 
 
 def available_decks(request):
-    my_ids = request.session.get("my_decks", [])
-    return Deck.objects.filter(Q(is_public=True) | Q(id__in=my_ids))
+    token = request.session.get("uploader_token")
+    q = Q(is_public=True)
+    if token:
+        q |= Q(uploader_token=token)
+    return Deck.objects.filter(q).order_by("name")
 
 
+@rate_limit("home", limit=20, window=600)  # 20 por 10 min
 def home(request):
+    """Crear sala o entrar con código."""
     decks = available_decks(request)
 
     if request.method == "POST" and "create" in request.POST:
@@ -33,6 +37,7 @@ def home(request):
     return render(request, "game/home.html", {"decks": decks})
 
 
+@rate_limit("join", limit=30, window=600)  # 30 por 10 min
 def join(request, code):
     """Esta es la URL que se comparte como invitación: /sala/ABC12/"""
     game = get_object_or_404(Game, code=code.upper())
@@ -67,5 +72,7 @@ def room(request, code):
     game = get_object_or_404(Game, code=code.upper())
     player = get_player(request, game)
     if not player:
-        return redirect("game:join", code=game.code)  # si no tiene identidad, pasa por el nickname
-    return render(request, "game/room.html", {"game": game, "player": player})
+        return redirect("game:join", code=game.code)  # sin identidad, pasa por el nickname
+    deck_options = [{"id": d.id, "name": d.name} for d in available_decks(request)]
+    return render(request, "game/room.html",
+                  {"game": game, "player": player, "deck_options": deck_options})

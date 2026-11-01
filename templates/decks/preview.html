@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% load static %}
+{% block content %}
+<div class="card">
+  <h2>{{ deck.name }}</h2>
+  {% if deck.description %}<p>{{ deck.description }}</p>{% endif %}
+  <p class="muted">{{ blacks|length }} negras · {{ whites|length }} blancas</p>
+  {% if deck.share_code %}<p>Código para cargarlo en una sala: <strong>{{ deck.share_code }}</strong></p>{% endif %}
+
+  <h3>Negras</h3>
+  <div class="deckgrid">
+    {% for c in blacks %}
+      <span class="c black" data-auto data-brand="{% if c.pick > 1 %}Cartas Arg · elige {{ c.pick }}{% else %}Cartas Arg{% endif %}"><span class="t">{{ c.text }}</span></span>
+    {% endfor %}
+  </div>
+
+  <h3>Blancas</h3>
+  <div class="deckgrid">
+    {% for c in whites %}
+      <span class="c white" data-auto data-brand="ARG"><span class="t">{{ c.text }}</span></span>
+    {% endfor %}
+  </div>
+</div>
+
+<script src="{% static 'js/cards.js' %}?v=1"></script>
+<script>CardsUI.enhance();</script>
+{% endblock %}

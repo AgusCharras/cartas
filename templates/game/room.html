@@ -1,36 +1,59 @@
-asgi{% extends "base.html" %}
+{% extends "base.html" %}
+{% block wrapclass %}wide{% endblock %}
 {% block content %}
 
-<div class="card">
-  <div class="room-head">
-    <div>
-      <div class="muted">Sala</div>
-      <div class="code">{{ game.code }}</div>
-    </div>
-    <button id="copy">Copiar link de invitación</button>
-  </div>
-  <p>Jugás como <strong>{{ player.nickname }}</strong> · <span id="status">Conectando…</span></p>
-  <p id="error" class="error"></p>
+<div class="roombar">
+  <div class="pill">Sala <strong class="code-sm">{{ game.code }}</strong></div>
+  <div class="pill accent" id="round-pill">Lobby</div>
+  <div class="pill" id="goal-pill" hidden></div>
+  <div class="pill" id="status">Conectando…</div>
+  <button id="copy" class="ghostbtn">Copiar link de invitación</button>
 </div>
 
-<div id="result" hidden></div>
-<div class="card" id="main"></div>
-<div class="card"><h3>Jugadores</h3><ul id="players"></ul></div></ul><p id="controls"></p></div>
+<div id="toast" class="toast" hidden></div>
+
+<div class="layout">
+  <section class="stage">
+    <div id="result" hidden></div>
+    <div id="main"></div>
+  </section>
+
+  <aside class="side">
+    <div class="panel">
+      <h3>Jugadores (<span id="pcount">0</span>)</h3>
+      <ul id="players" class="plist"></ul>
+      <div id="controls" class="ctrls"></div>
+    </div>
+    <div class="panel chat">
+      <h3>Chat</h3>
+      <div id="chatlog"></div>
+      <form id="chatform" autocomplete="off">
+        <input id="chatinput" maxlength="200" placeholder="Escribí un mensaje…">
+        <button>➤</button>
+      </form>
+    </div>
+  </aside>
+</div>
+
+{{ deck_options|json_script:"deck-options" }}
 
 <script>
   const $ = (id) => document.getElementById(id);
-      const inviteLink = location.origin + "{% url 'game:join' game.code %}";
+  const inviteLink = location.origin + "{% url 'game:join' game.code %}";
+  const deckOptions = JSON.parse($("deck-options").textContent);
+
+  let ws = null, state = null, selected = [], selectedSub = null, toastTimer = null, pingTimer = null;
+  let codeDraft = "", selectDraft = "";  // para no perder lo escrito cuando llega un refresco
+
   $("copy").onclick = async () => {
     try {
       await navigator.clipboard.writeText(inviteLink);
       $("copy").textContent = "¡Copiado!";
       setTimeout(() => { $("copy").textContent = "Copiar link de invitación"; }, 2000);
     } catch {
-      prompt("Copiá el link:", inviteLink);  // si el navegador no deja usar el portapapeles
+      prompt("Copiá el link:", inviteLink);
     }
   };
-
-  let ws = null, state = null, selected = [], errorTimer = null;
 
   function send(obj) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -46,16 +69,55 @@ asgi{% extends "base.html" %}
 
   function cardNode(text, cls, onClick) {
     const n = node("div", text, "c " + cls);
+    n.dataset.brand = cls.split(" ").includes("black") ? "Cartas Arg" : "ARG";
     if (onClick) { n.classList.add("clickable"); n.onclick = onClick; }
     return n;
   }
 
-  function showError(msg) {
-    $("error").textContent = msg;
-    clearTimeout(errorTimer);
-    errorTimer = setTimeout(() => { $("error").textContent = ""; }, 4000);
+  function showToast(msg) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
   }
 
+  // ---- avatares: emoji + color determinísticos a partir del apodo ----
+  const AVATARS = ["🦆", "🐱", "🐶", "👽", "🦊", "🐸", "🐼", "🦉", "🐙", "🦄", "🐵", "🐢", "🦖", "🐧", "🐯", "🦁"];
+  function hash(str) {
+    let h = 5381;
+    for (const ch of str) h = ((h << 5) + h + ch.codePointAt(0)) | 0;
+    return Math.abs(h);
+  }
+  function avatarNode(nick) {
+    const n = node("div", AVATARS[hash(nick) % AVATARS.length], "avatar");
+    n.style.background = `hsl(${hash(nick) % 360} 55% 38%)`;
+    return n;
+  }
+
+  // ---- chat ----
+  function addChat(nick, text) {
+    const log = $("chatlog");
+    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    const row = node("div", undefined, "chatmsg");
+    const who = node("b", nick + ":");
+    who.style.color = `hsl(${hash(nick) % 360} 70% 72%)`;
+    row.append(who, " ", document.createTextNode(text));
+    log.append(row);
+    while (log.children.length > 60) log.firstChild.remove();
+    if (nearBottom) log.scrollTop = log.scrollHeight;
+  }
+
+  $("chatform").onsubmit = (e) => {
+    e.preventDefault();
+    const input = $("chatinput");
+    const text = input.value.trim();
+    if (!text) return;
+    send({ action: "chat", text });
+    input.value = "";
+  };
+
+  // ---- selección ----
   function toggle(id, pick) {
     const i = selected.indexOf(id);
     if (i >= 0) selected.splice(i, 1);
@@ -63,33 +125,80 @@ asgi{% extends "base.html" %}
     renderMain(state);
   }
 
-  function renderResult(s) {
+  // ---- render ----
+  // ---- animación del +1 cuando alguien suma un punto ----
+  const CELEBRATE_MS = 1800;
+  let prevScores = null;     // id -> puntos de la última vez (null hasta recibir el primer estado)
+  const celebrating = {};    // id -> momento en que empezó la animación
+  let shownRound = null;
+
+  function trackScores(s) {
+    if (prevScores) {
+      for (const p of s.players) {
+        if (prevScores[p.id] !== undefined && p.score > prevScores[p.id]) {
+          celebrating[p.id] = performance.now();
+        }
+      }
+    }
+    prevScores = Object.fromEntries(s.players.map((p) => [p.id, p.score]));
+  }
+
+  function renderResult(s, first) {
     const r = $("result");
-    if (!s.last_result) { r.hidden = true; return; }
+    if (!s.last_result || s.state === "lobby") { r.hidden = true; return; }
     const l = s.last_result;
     r.hidden = false;
-    r.textContent = `Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.join(" / ")}`;
+    r.textContent = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.join(" / ")}`;
+    if (l.round !== shownRound) {
+      shownRound = l.round;
+      if (!first) {  // al entrar o recargar no se anima
+        r.classList.remove("pop");
+        void r.offsetWidth;  // reinicia la animación
+        r.classList.add("pop");
+      }
+    }
   }
 
   function renderPlayers(s) {
+    $("pcount").textContent = s.players.length;
     const ul = $("players");
     ul.replaceChildren();
     for (const p of s.players) {
-      let t = p.nickname;
-      if (p.is_host) t += " 👑";
-      if (p.is_judge) t += " ⚖️";
-      if (s.state === "playing" && !p.is_judge) t += p.has_played ? " ✅" : " ⏳";
-      if (s.state !== "lobby") t += ` — ${p.score} pts`;
-      if (!p.online) t += " · 🔌 desconectado";
-      const li = node("li", t + " ");
+      const li = node("li", undefined, "prow" + (p.online ? "" : " offline"));
+      li.append(avatarNode(p.nickname));
+
+      const name = node("div", undefined, "pname");
+      name.append(node("span", p.nickname + (p.id === s.me.id ? " (vos)" : "")));
+      if (p.is_host) name.append(node("span", " 👑"));
+      if (p.is_judge && s.state !== "lobby") name.append(node("span", " ⚖️"));
+      if (s.state === "playing" && !p.is_judge) name.append(node("span", p.has_played ? " ✅" : " ⏳"));
+      if (!p.online) name.append(node("span", " 🔌"));
+      li.append(name);
+
       if (s.me.is_host && p.id !== s.me.id && s.state !== "finished") {
-        const b = node("button", "Expulsar");
-        b.onclick = () => {
+        const k = node("button", "✕", "kick");
+        k.title = `Expulsar a ${p.nickname}`;
+        k.onclick = () => {
           if (confirm(`¿Expulsar a ${p.nickname}?`)) send({ action: "kick", player: p.id });
         };
-        li.append(b);
+        li.append(k);
       }
-      ul.appendChild(li);
+      const scoreEl = node("div", String(p.score), "score");
+      const started = celebrating[p.id];
+      if (started !== undefined) {
+        const elapsed = performance.now() - started;
+        if (elapsed < CELEBRATE_MS) {
+          // Como la lista se redibuja en cada refresco, la animación se reanuda
+          // desde donde iba (delay negativo) en vez de arrancar de cero.
+          li.classList.add("scored");
+          li.style.setProperty("--d", `-${Math.round(elapsed)}ms`);
+          scoreEl.append(node("span", "+1", "plus"));
+        } else {
+          delete celebrating[p.id];
+        }
+      }
+      li.append(scoreEl);
+      ul.append(li);
     }
   }
 
@@ -99,112 +208,232 @@ asgi{% extends "base.html" %}
 
     const host = s.players.find((p) => p.is_host);
     if (!s.me.is_host && host && !host.online) {
-      const b = node("button", "El host se desconectó: tomar el rol de host");
+      const b = node("button", "El host se desconectó: tomar el rol");
       b.onclick = () => send({ action: "claim_host" });
-      box.append(b, " ");
+      box.append(b);
     }
     if (s.me.is_host && (s.state === "playing" || s.state === "judging")) {
-      const b = node("button", "Saltear al juez actual");
+      const b = node("button", "Saltear al juez");
       b.onclick = () => {
         if (confirm("Se cancela la ronda y pasa a otro juez. ¿Seguro?")) send({ action: "skip_judge" });
       };
-      box.append(b, " ");
+      box.append(b);
     }
     if (s.me.is_host && s.state === "playing" && s.players.some((p) => p.has_played)) {
       const b = node("button", "Seguir sin los que faltan");
       b.onclick = () => send({ action: "force_judging" });
-      box.append(b, " ");
+      box.append(b);
     }
     const leave = node("button", "Salir de la sala");
     leave.onclick = () => { if (confirm("¿Salir de la sala?")) send({ action: "leave" }); };
     box.append(leave);
   }
 
-  function renderMain(s) {
-    const main = $("main");
-    main.replaceChildren();
+  function renderLobby(main, s, keepFocus) {
+    main.append(node("h3", "Esperando jugadores"));
+    main.append(node("p", `Se necesitan al menos ${s.min_players} para empezar.`, "muted"));
 
-    if (s.state === "lobby") {
-      main.append(node("p", `Esperando jugadores (mínimo ${s.min_players}).`));
+    main.append(node("h3", "Mazos de la sala"));
+    if (!s.decks.length) main.append(node("p", "Todavía no hay mazos.", "muted"));
+    const ul = node("ul", undefined, "decklist");
+    for (const d of s.decks) {
+      const li = node("li", `${d.name} — ${d.blacks} negras · ${d.whites} blancas `);
       if (s.me.is_host) {
-        const b = node("button", "Empezar partida");
-        b.disabled = s.players.length < s.min_players;
-        b.onclick = () => send({ action: "start_game" });
-        main.append(b);
-      } else {
-        main.append(node("p", "Esperá a que el host empiece la partida."));
+        const b = node("button", "Quitar", "danger");
+        b.onclick = () => send({ action: "remove_deck", deck: d.id });
+        li.append(b);
       }
+      ul.append(li);
+    }
+    main.append(ul);
+
+    const whites = s.decks.reduce((n, d) => n + d.whites, 0);
+    const blacks = s.decks.reduce((n, d) => n + d.blacks, 0);
+    let problem = "";
+    if (blacks === 0) problem = "Falta al menos una carta negra.";
+    else if (whites < s.needed_whites) {
+      problem = `Hacen falta al menos ${s.needed_whites} cartas blancas para ${s.players.length} jugadores (hay ${whites}).`;
+    }
+    if (problem) main.append(node("p", problem, "error"));
+
+    if (!s.me.is_host) {
+      main.append(node("p", "Esperá a que el host empiece la partida."));
       return;
     }
 
-    if (s.state === "finished") {
-      const medals = ["🥇", "🥈", "🥉"];
-      const ranking = [...s.players].sort((a, b) => b.score - a.score);
-      main.append(node("h3", "🏆 Partida terminada"));
-      const ol = node("ul");
-      ranking.forEach((p, i) => ol.append(node("li", `${medals[i] || "▫️"} ${p.nickname} — ${p.score} pts`)));
-      main.append(ol);
-      const a = node("a", "Volver al inicio");
-      a.href = "{% url 'game:home' %}";
-      main.append(a);
-      return;
+    // Mazos propios o públicos que todavía no están en la sala
+    const inRoom = new Set(s.decks.map((d) => d.id));
+    const free = deckOptions.filter((o) => !inRoom.has(o.id));
+    if (free.length) {
+      const row = node("div", undefined, "formrow");
+      const sel = node("select");
+      for (const o of free) {
+        const op = node("option", o.name);
+        op.value = String(o.id);
+        sel.append(op);
+      }
+      if (free.some((o) => String(o.id) === selectDraft)) sel.value = selectDraft;
+      sel.onchange = () => { selectDraft = sel.value; };
+      const add = node("button", "Agregar mazo");
+      add.onclick = () => send({ action: "add_deck", deck: Number(sel.value) });
+      row.append(sel, add);
+      main.append(row);
     }
 
-    main.append(node("h3", `Ronda ${s.round} · se gana con ${s.points_to_win} puntos`));
-    main.append(cardNode(s.black.text, "black"));
+    // Mazo compartido por otra persona (código)
+    const row2 = node("div", undefined, "formrow");
+    const input = node("input");
+    input.id = "deck-code";
+    input.placeholder = "Código de mazo compartido";
+    input.maxLength = 12;
+    input.value = codeDraft;
+    input.oninput = () => { codeDraft = input.value; };
+    const addCode = () => {
+      const code = input.value.trim();
+      if (!code) return;
+      send({ action: "add_deck", code });
+      codeDraft = "";
+      input.value = "";
+    };
+    input.onkeydown = (e) => { if (e.key === "Enter") addCode(); };
+    const addByCode = node("button", "Agregar por código");
+    addByCode.onclick = addCode;
+    row2.append(input, addByCode);
+    main.append(row2);
+    if (keepFocus) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+    main.append(node("p", "Los mazos se crean y se comparten desde «Mis mazos».", "muted"));
+
+    const start = node("button", "Empezar partida", "bigbtn");
+    start.disabled = s.players.length < s.min_players || !!problem;
+    start.onclick = () => send({ action: "start_game" });
+    main.append(start);
+  }
+
+  function renderFinished(main, s) {
+    const medals = ["🥇", "🥈", "🥉"];
+    const ranking = [...s.players].sort((a, b) => b.score - a.score);
+    main.append(node("h3", "🏆 Partida terminada"));
+    const ul = node("ul", undefined, "decklist");
+    ranking.forEach((p, i) => ul.append(node("li", `${medals[i] || "▫️"} ${p.nickname} — ${p.score} pts`)));
+    main.append(ul);
+    const a = node("a", "Volver al inicio", "btn");
+    a.href = "{% url 'game:home' %}";
+    main.append(a);
+  }
+
+  function renderBoard(main, s) {
+    const board = node("div", undefined, "board");
+    const pick = s.black.pick;
+
+    // Fila superior: carta negra + mesa
+    const top = node("div", undefined, "toprow");
+    top.append(cardNode(s.black.text, "black"));
+    const tableEl = node("div", undefined, "tablecards");
 
     if (s.state === "playing") {
+      // Boca abajo: nadie ve qué jugó cada uno hasta el juicio
+      for (const p of s.players.filter((x) => !x.is_judge)) {
+        tableEl.append(p.has_played ? cardNode("", "back") : node("div", undefined, "slot"));
+      }
+    } else {
+      for (const sub of s.submissions) {
+        const group = node("div", undefined, "sub" + (selectedSub === sub.id ? " selected" : "")
+                                                    + (s.me.is_judge ? " clickable" : ""));
+        sub.cards.forEach((t) => group.append(cardNode(t, "white")));
+        if (s.me.is_judge) {
+          group.onclick = () => { selectedSub = selectedSub === sub.id ? null : sub.id; renderMain(state); };
+        }
+        tableEl.append(group);
+      }
+    }
+    top.append(tableEl);
+    board.append(top);
+
+    // Acciones
+    const actions = node("div", undefined, "actions");
+    if (s.state === "playing") {
       if (s.me.is_judge) {
-        main.append(node("p", "⚖️ Sos el juez de esta ronda. Esperá a que los demás jueguen."));
-        return;
+        actions.append(node("p", "⚖️ Sos el juez de esta ronda. Esperá a que los demás jueguen.", "hint"));
+      } else if (s.me.has_played) {
+        actions.append(node("p", "Ya jugaste. Esperando al resto…", "hint"));
+      } else {
+        const left = s.me.rerolls_left ?? 0;
+        const play = node("button", pick > 1 ? `✈ Enviar ${pick} cartas` : "✈ Enviar carta", "bigbtn");
+        play.disabled = selected.length !== pick;
+        play.onclick = () => { send({ action: "play_cards", cards: selected }); selected = []; };
+
+        const rr = node("button", `🔄 Cambiar carta (${left})`, "ghostbtn");
+        rr.disabled = left <= 0 || selected.length !== 1;
+        rr.onclick = () => {
+          if (confirm("Se descarta la carta elegida y recibís una nueva. ¿Seguro?")) {
+            send({ action: "reroll", card: selected[0] });
+          }
+        };
+        actions.append(play, rr);
       }
-      if (s.me.has_played) {
-        main.append(node("p", "Ya jugaste. Esperando al resto…"));
-        return;
-      }
-      const pick = s.black.pick;
-      main.append(node("p", `Tu mano: elegí ${pick} carta${pick > 1 ? "s" : ""}`));
-      const hand = node("div", undefined, "cards");
+    } else if (s.me.is_judge) {
+      const win = node("button", "🏆 Elegir ganadora", "bigbtn");
+      win.disabled = selectedSub === null;
+      win.onclick = () => { send({ action: "pick_winner", submission: selectedSub }); selectedSub = null; };
+      actions.append(win);
+      if (selectedSub === null) actions.append(node("p", "Tocá la respuesta que más te gustó.", "hint"));
+    } else {
+      actions.append(node("p", "El juez está eligiendo…", "hint"));
+    }
+    board.append(actions);
+
+    // Mano (solo en la fase de jugar, y no para el juez)
+    if (s.state === "playing" && !s.me.is_judge) {
+      const wrap = node("div", undefined, "handwrap");
+      const count = node("div", undefined, "handcount");
+      count.append(node("span", "Tus cartas:"), node("strong", String(s.me.hand.length)));
+
+      const hand = node("div", undefined, "hand" + (s.me.has_played ? " locked" : ""));
       for (const c of s.me.hand) {
         const idx = selected.indexOf(c.id);
         const label = idx >= 0 && pick > 1 ? `${idx + 1}. ${c.text}` : c.text;
-        hand.append(cardNode(label, "white" + (idx >= 0 ? " selected" : ""), () => toggle(c.id, pick)));
+        hand.append(cardNode(label, "white" + (idx >= 0 ? " selected" : ""),
+                             s.me.has_played ? null : () => toggle(c.id, pick)));
       }
-      main.append(hand);
-      const b = node("button", "Jugar");
-      b.disabled = selected.length !== pick;
-      b.onclick = () => { send({ action: "play_cards", cards: selected }); selected = []; };
-      main.append(b);
+      wrap.append(count, hand);
+      board.append(wrap);
     }
 
-    if (s.state === "judging") {
-      main.append(node("p", s.me.is_judge ? "Elegí la mejor respuesta:" : "El juez está eligiendo…"));
-      for (const sub of s.submissions) {
-        const box = node("div", undefined, "card");
-        const row = node("div", undefined, "cards");
-        sub.cards.forEach((t) => row.append(cardNode(t, "white")));
-        box.append(row);
-        if (s.me.is_judge) {
-          const b = node("button", "Elegir esta");
-          b.onclick = () => send({ action: "pick_winner", submission: sub.id });
-          box.append(b);
-        }
-        main.append(box);
-      }
-    }
+    main.append(board);
+  }
+
+  function renderMain(s) {
+    const main = $("main");
+    const keepFocus = !!document.activeElement && document.activeElement.id === "deck-code";
+    main.replaceChildren();
+    main.className = (s.state === "lobby" || s.state === "finished") ? "panel" : "";
+
+    if (s.state === "lobby") { renderLobby(main, s, keepFocus); return; }
+    if (s.state === "finished") { renderFinished(main, s); return; }
+    renderBoard(main, s);
   }
 
   function render(s) {
+    const first = state === null;  // primer estado recibido (entrada o recarga)
+    trackScores(s);
     state = s;
     const ids = new Set(s.me.hand.map((c) => c.id));
     selected = selected.filter((id) => ids.has(id));
-    renderResult(s);
+    if (s.state !== "judging" || !s.submissions.some((x) => x.id === selectedSub)) selectedSub = null;
+
+    $("round-pill").textContent =
+      s.state === "lobby" ? "Lobby" : s.state === "finished" ? "Partida terminada" : `Ronda ${s.round}`;
+    $("goal-pill").hidden = s.state === "lobby";
+    $("goal-pill").textContent = `A ${s.points_to_win} puntos`;
+
+    renderResult(s, first);
     renderPlayers(s);
-    renderControls(s);   // <-- nueva
+    renderControls(s);
     renderMain(s);
   }
-
-  let pingTimer = null;
 
   function connect() {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -218,16 +447,17 @@ asgi{% extends "base.html" %}
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "state") render(msg);
-      else if (msg.type === "error") showError(msg.message);
+      else if (msg.type === "chat") addChat(msg.nick, msg.text);
+      else if (msg.type === "error") showToast(msg.message);
     };
     ws.onclose = (e) => {
       clearInterval(pingTimer);
       if (e.code === 4403 || e.code === 4404) {  // sin reconexión: ya no pertenece a la sala
-        $("status").textContent = e.code === 4404 ? "Ya no estás en esta sala." : "No pertenecés a esta sala.";
+        $("status").textContent = e.code === 4404 ? "Ya no estás en esta sala" : "No pertenecés a esta sala";
         $("main").replaceChildren();
         $("players").replaceChildren();
         $("controls").replaceChildren();
-        const a = node("a", "Volver al inicio");
+        const a = node("a", "Volver al inicio", "btn");
         a.href = "{% url 'game:home' %}";
         $("main").append(a);
         return;
