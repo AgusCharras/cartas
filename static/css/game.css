@@ -233,3 +233,24 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
   .prow.scored, .prow.scored .score, #result.pop { animation: none; }
   .plus { display: none; }
 }
+
+/* ============ Carta dorada ============ */
+.c.gold { background: linear-gradient(145deg, #fff4b8, #f5c542 45%, #d89b13); color: #2b1d00;
+          border: 2px solid #fff3c4;
+          box-shadow: 0 0 18px rgba(245, 197, 66, .5), 0 4px 10px rgba(0, 0, 0, .5); }
+.c.gold::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+                  background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, .6) 50%, transparent 65%);
+                  background-size: 250% 100%; animation: goldshine 3.2s linear infinite; }
+.c.gold::after { color: #5a3d00; opacity: .8; }
+@keyframes goldshine { from { background-position: 150% 0; } to { background-position: -150% 0; } }
+
+.c .gtitle { font-size: .8rem; margin-bottom: .4rem; }
+.c .ghint { font-size: .72rem; font-weight: 600; opacity: .8; }
+.c.gold textarea { position: relative; z-index: 1; flex: 1; width: 100%; min-height: 0; resize: none;
+                   padding: .35rem; background: rgba(255, 255, 255, .7); color: #111;
+                   border: 1px solid #b8860b; border-radius: 6px;
+                   font: inherit; font-size: .78rem; font-weight: 700; }
+
+@media (prefers-reduced-motion: reduce) {
+  .c.gold::before { animation: none; }
+}

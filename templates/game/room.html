@@ -69,8 +69,49 @@
 
   function cardNode(text, cls, onClick) {
     const n = node("div", text, "c " + cls);
-    n.dataset.brand = cls.split(" ").includes("black") ? "Cartas Arg" : "ARG";
+    const kinds = cls.split(" ");
+    n.dataset.brand = kinds.includes("black") ? "Cartas Arg" : kinds.includes("gold") ? "ARG · dorada" : "ARG";
     if (onClick) { n.classList.add("clickable"); n.onclick = onClick; }
+    return n;
+  }
+
+  // ---- carta dorada: una por jugador y por partida, escrita por el propio jugador ----
+  const GOLDEN_MAX = 140;
+  let goldenText = "";       // borrador (sobrevive a los refrescos del estado)
+  let focusGolden = false;   // enfocar el cuadro de texto justo después de elegirla
+  let playBtn = null;
+
+  // En la selección, la carta dorada se representa con "G" (las de la mano, con su id)
+  function canPlay() {
+    if (!state || !state.black) return false;
+    if (selected.length !== state.black.pick) return false;
+    return !selected.includes("G") || goldenText.trim().length >= 3;
+  }
+
+  function updateSend() {
+    if (playBtn) playBtn.disabled = !canPlay();
+  }
+
+  function goldenCardNode(pick) {
+    const idx = selected.indexOf("G");
+    const on = idx >= 0;
+    const n = node("div", undefined, "c gold clickable" + (on ? " selected" : ""));
+    n.dataset.brand = "ARG · dorada";
+    n.onclick = () => toggle("G", pick);
+    const prefix = on && pick > 1 ? (idx + 1) + ". " : "";
+    n.append(node("div", prefix + "⭐ Carta dorada", "gtitle"));
+    if (on) {
+      const ta = node("textarea");
+      ta.id = "golden-input";
+      ta.maxLength = GOLDEN_MAX;
+      ta.placeholder = "Escribí tu carta…";
+      ta.value = goldenText;
+      ta.onclick = (e) => e.stopPropagation();  // escribir no deselecciona la carta
+      ta.oninput = () => { goldenText = ta.value; updateSend(); };
+      n.append(ta);
+    } else {
+      n.append(node("div", goldenText.trim() || "Escribí tu propia carta (1 por partida)", "ghint"));
+    }
     return n;
   }
 
@@ -122,6 +163,7 @@
     const i = selected.indexOf(id);
     if (i >= 0) selected.splice(i, 1);
     else { selected.push(id); if (selected.length > pick) selected.shift(); }
+    focusGolden = id === "G" && selected.includes("G");
     renderMain(state);
   }
 
@@ -148,7 +190,7 @@
     if (!s.last_result || s.state === "lobby") { r.hidden = true; return; }
     const l = s.last_result;
     r.hidden = false;
-    r.textContent = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.join(" / ")}`;
+    r.textContent = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`;
     if (l.round !== shownRound) {
       shownRound = l.round;
       if (!first) {  // al entrar o recargar no se anima
@@ -232,6 +274,7 @@
   function renderLobby(main, s, keepFocus) {
     main.append(node("h3", "Esperando jugadores"));
     main.append(node("p", `Se necesitan al menos ${s.min_players} para empezar.`, "muted"));
+    main.append(node("p", "⭐ Cada jugador tiene 1 carta dorada por partida: la escribe él mismo y la juega como respuesta.", "muted"));
 
     main.append(node("h3", "Mazos de la sala"));
     if (!s.decks.length) main.append(node("p", "Todavía no hay mazos.", "muted"));
@@ -342,7 +385,8 @@
       for (const sub of s.submissions) {
         const group = node("div", undefined, "sub" + (selectedSub === sub.id ? " selected" : "")
                                                     + (s.me.is_judge ? " clickable" : ""));
-        sub.cards.forEach((t) => group.append(cardNode(t, "white")));
+        sub.cards.forEach((t, i) =>
+          group.append(cardNode(t, "white" + (sub.golden && sub.golden[i] ? " gold" : ""))));
         if (s.me.is_judge) {
           group.onclick = () => { selectedSub = selectedSub === sub.id ? null : sub.id; renderMain(state); };
         }
@@ -362,11 +406,18 @@
       } else {
         const left = s.me.rerolls_left ?? 0;
         const play = node("button", pick > 1 ? `✈ Enviar ${pick} cartas` : "✈ Enviar carta", "bigbtn");
-        play.disabled = selected.length !== pick;
-        play.onclick = () => { send({ action: "play_cards", cards: selected }); selected = []; };
+        play.disabled = !canPlay();
+        playBtn = play;
+        play.onclick = () => {
+          const gi = selected.indexOf("G");
+          const msg = { action: "play_cards", cards: selected.filter((x) => x !== "G") };
+          if (gi >= 0) msg.golden = { slot: gi, text: goldenText.trim() };
+          send(msg);
+          // La selección se limpia sola cuando llega el estado nuevo (si hay un error, no se pierde)
+        };
 
         const rr = node("button", `🔄 Cambiar carta (${left})`, "ghostbtn");
-        rr.disabled = left <= 0 || selected.length !== 1;
+        rr.disabled = left <= 0 || selected.length !== 1 || selected[0] === "G";
         rr.onclick = () => {
           if (confirm("Se descarta la carta elegida y recibís una nueva. ¿Seguro?")) {
             send({ action: "reroll", card: selected[0] });
@@ -392,6 +443,7 @@
       count.append(node("span", "Tus cartas:"), node("strong", String(s.me.hand.length)));
 
       const hand = node("div", undefined, "hand" + (s.me.has_played ? " locked" : ""));
+      if (!s.me.has_played && (s.me.golden_left ?? 0) > 0) hand.append(goldenCardNode(pick));
       for (const c of s.me.hand) {
         const idx = selected.indexOf(c.id);
         const label = idx >= 0 && pick > 1 ? `${idx + 1}. ${c.text}` : c.text;
@@ -407,13 +459,24 @@
 
   function renderMain(s) {
     const main = $("main");
-    const keepFocus = !!document.activeElement && document.activeElement.id === "deck-code";
+    const ae = document.activeElement;
+    const keepFocus = !!ae && ae.id === "deck-code";
+    const keepGolden = !!ae && ae.id === "golden-input";
+    const caret = keepGolden ? [ae.selectionStart, ae.selectionEnd] : [0, 0];
     main.replaceChildren();
     main.className = (s.state === "lobby" || s.state === "finished") ? "panel" : "";
 
     if (s.state === "lobby") { renderLobby(main, s, keepFocus); return; }
     if (s.state === "finished") { renderFinished(main, s); return; }
     renderBoard(main, s);
+
+    const g = $("golden-input");
+    if (g && (focusGolden || keepGolden)) {
+      g.focus();
+      const [a, b] = focusGolden ? [g.value.length, g.value.length] : caret;
+      g.setSelectionRange(a, b);
+      focusGolden = false;
+    }
   }
 
   function render(s) {
@@ -421,7 +484,10 @@
     trackScores(s);
     state = s;
     const ids = new Set(s.me.hand.map((c) => c.id));
-    selected = selected.filter((id) => ids.has(id));
+    const goldenOk = s.state === "playing" && !s.me.is_judge && !s.me.has_played
+                     && (s.me.golden_left ?? 0) > 0;
+    selected = selected.filter((id) => ids.has(id) || (id === "G" && goldenOk));
+    if ((s.me.golden_left ?? 0) <= 0) goldenText = "";  // ya la usó: se descarta el borrador
     if (s.state !== "judging" || !s.submissions.some((x) => x.id === selectedSub)) selectedSub = null;
 
     $("round-pill").textContent =

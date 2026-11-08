@@ -53,10 +53,20 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
 
             elif action == "play_cards":
                 ids = content.get("cards")
-                if (not isinstance(ids, list) or not 1 <= len(ids) <= 3
+                if (not isinstance(ids, list) or len(ids) > 3
                         or not all(type(i) is int for i in ids)):
                     raise GameError("Jugada inválida.")
-                await self.run(services.play_cards, ids)
+                gold = None
+                golden = content.get("golden")
+                if golden is not None:
+                    if (not isinstance(golden, dict) or type(golden.get("slot")) is not int
+                            or not isinstance(golden.get("text"), str)
+                            or len(golden["text"]) > 1000):
+                        raise GameError("Carta dorada inválida.")
+                    gold = (golden["slot"], golden["text"])
+                if not ids and gold is None:
+                    raise GameError("Jugada inválida.")
+                await self.run(services.play_cards, ids, gold)
 
             elif action == "reroll":
                 cid = content.get("card")

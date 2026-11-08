@@ -1,6 +1,9 @@
+import hashlib
+import hmac
 import random
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, F, Q
 from django.db.models.functions import Greatest
@@ -13,6 +16,8 @@ HAND_SIZE = 7
 MIN_PLAYERS = 3        # para empezar la partida
 MIN_TO_CONTINUE = 2    # si quedan menos, la partida termina
 MAX_DECKS_PER_GAME = 8
+MIN_GOLDEN_LEN = 3      # largo de la carta dorada que escribe el jugador
+MAX_GOLDEN_LEN = 140
 GRACE = timedelta(seconds=20)   # cuánto debe llevar desconectado el host para poder tomarle el rol
 STALE = timedelta(seconds=90)   # sin latidos por este tiempo = se lo considera desconectado
 
@@ -29,6 +34,18 @@ def _lock(game_id):
 
 def _current_black(game):
     return game.cards.select_related("card").get(status=GameCard.CURRENT)
+
+
+def _sub_token(game, first_card_id):
+    """Identificador opaco de una jugada (y a la vez su clave de orden en la mesa).
+
+    Sale de un HMAC con la clave secreta del servidor, la partida, la ronda y la carta:
+    es estable durante la ronda (todos ven el mismo orden), cambia de una ronda a otra y
+    no revela quién jugó cada una (ni por el orden de entrada ni por el id de la base).
+    Son 48 bits para que entre sin perder precisión en un número de JavaScript."""
+    msg = f"{game.id}:{game.round_number}:{first_card_id}".encode()
+    digest = hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
+    return int(digest[:12], 16)
 
 
 # ---------- mazos ----------
@@ -112,7 +129,9 @@ def _start_round(game):
 
 
 @transaction.atomic
-def play_cards(game_id, player_id, card_ids):
+def play_cards(game_id, player_id, card_ids, golden=None):
+    """card_ids: cartas de la mano. golden: (posición, texto) si juega su carta dorada,
+    que ocupa una de las posiciones de la jugada (las demás se llenan con la mano, en orden)."""
     game = _lock(game_id)
     if game.state != Game.PLAYING:
         raise GameError("Ahora no se pueden jugar cartas.")
@@ -122,17 +141,40 @@ def play_cards(game_id, player_id, card_ids):
         raise GameError("Ya jugaste en esta ronda.")
 
     pick = _current_black(game).card.pick
-    if len(card_ids) != pick or len(set(card_ids)) != pick:
+    if len(card_ids) + (1 if golden else 0) != pick or len(set(card_ids)) != len(card_ids):
         raise GameError(f"Tenés que elegir {pick} carta(s) distintas.")
+
+    me = golden_slot = golden_text = None
+    if golden:
+        golden_slot, golden_text = golden
+        golden_text = " ".join(golden_text.split())  # sin saltos de línea ni espacios de más
+        if not 0 <= golden_slot < pick:
+            raise GameError("Posición de la carta dorada inválida.")
+        if not MIN_GOLDEN_LEN <= len(golden_text) <= MAX_GOLDEN_LEN:
+            raise GameError(
+                f"La carta dorada debe tener entre {MIN_GOLDEN_LEN} y {MAX_GOLDEN_LEN} caracteres.")
+        me = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
+        if me is None:
+            raise GameError("Ya no estás en esta sala.")
+        if me.golden_left <= 0:
+            raise GameError("Ya usaste tu carta dorada en esta partida.")
 
     hand = {gc.id: gc for gc in game.cards.filter(
         status=GameCard.HAND, player_id=player_id, id__in=card_ids)}
-    if len(hand) != pick:
+    if len(hand) != len(card_ids):
         raise GameError("Esas cartas no están en tu mano.")
 
-    for slot, cid in enumerate(card_ids):
+    # La dorada ocupa la posición que eligió el jugador; la mano llena el resto, en orden
+    free_slots = [s for s in range(pick) if s != golden_slot]
+    for slot, cid in zip(free_slots, card_ids):
         hand[cid].status, hand[cid].slot = GameCard.PLAYED, slot
     GameCard.objects.bulk_update(hand.values(), ["status", "slot"])
+
+    if golden:
+        GameCard.objects.create(game=game, card=None, custom_text=golden_text,
+                                status=GameCard.PLAYED, player=me, slot=golden_slot)
+        me.golden_left -= 1
+        me.save(update_fields=["golden_left"])
 
     submitted = game.cards.filter(status=GameCard.PLAYED).values("player_id").distinct().count()
     if submitted >= game.players.count() - 1:  # todos menos el juez
@@ -180,8 +222,11 @@ def pick_winner(game_id, player_id, submission_id):
     if player_id != game.judge_id:
         raise GameError("Solo el juez elige la ganadora.")
 
-    first = (game.cards.filter(id=submission_id, status=GameCard.PLAYED, slot=0)
-             .select_related("player").first())
+    first = None
+    for gc in game.cards.filter(status=GameCard.PLAYED, slot=0).select_related("player"):
+        if _sub_token(game, gc.id) == submission_id:
+            first = gc
+            break
     if first is None:
         raise GameError("Jugada inválida.")
 
@@ -196,12 +241,14 @@ def pick_winner(game_id, player_id, submission_id):
         "round": game.round_number,
         "winner": winner.nickname,
         "black": black.card.text,
-        "cards": [gc.card.text for gc in winner_cards],
+        "cards": [gc.text for gc in winner_cards],
+        "golden": [gc.is_golden for gc in winner_cards],
     }
 
     # Todo lo jugado en la ronda (y la negra) va al descarte
     game.cards.filter(status__in=[GameCard.PLAYED, GameCard.CURRENT]).update(
         status=GameCard.DISCARD, player=None, slot=None)
+    game.cards.filter(card__isnull=True, status=GameCard.DISCARD).delete()  # las doradas no se reciclan
 
     if winner.score >= game.points_to_win:
         game.state = Game.FINISHED
@@ -265,7 +312,12 @@ def _require_host(game, player_id):
 
 def _restart_round(game, new_judge):
     """Cancela la ronda en curso y arranca otra con otra negra y otro juez.
-    Las cartas ya jugadas vuelven a la mano de quien las jugó."""
+    Las cartas ya jugadas vuelven a la mano de quien las jugó, y las doradas
+    gastadas en esta ronda se devuelven (se borran y el jugador recupera su uso)."""
+    for gc in list(game.cards.filter(status=GameCard.PLAYED, card__isnull=True)):
+        if gc.player_id:
+            Player.objects.filter(pk=gc.player_id).update(golden_left=F("golden_left") + 1)
+        gc.delete()
     game.cards.filter(status=GameCard.PLAYED, player__isnull=False).update(
         status=GameCard.HAND, slot=None)
     game.cards.filter(status__in=[GameCard.PLAYED, GameCard.CURRENT]).update(
@@ -306,6 +358,7 @@ def remove_player(game_id, actor_id, target_id):
     # Sus cartas (mano y jugadas) van al descarte
     game.cards.filter(player_id=target_id).update(
         status=GameCard.DISCARD, player=None, slot=None)
+    game.cards.filter(card__isnull=True, status=GameCard.DISCARD).delete()  # doradas del que se va
     target.delete()
 
     if game.state in (Game.PLAYING, Game.JUDGING):
@@ -440,7 +493,7 @@ def snapshot(game_id, player_id):
 
     hand = []
     if in_round:
-        hand = [{"id": gc.id, "text": gc.card.text}
+        hand = [{"id": gc.id, "text": gc.text}
                 for gc in game.cards.filter(status=GameCard.HAND, player_id=player_id)
                 .select_related("card").order_by("id")]
 
@@ -449,10 +502,13 @@ def snapshot(game_id, player_id):
         by_player = {}
         for gc in game.cards.filter(status=GameCard.PLAYED).select_related("card").order_by("slot"):
             by_player.setdefault(gc.player_id, []).append(gc)
-        # El id de la jugada es el de su primera carta: no revela quién la jugó.
-        # Se ordenan por 'position' (aleatoria), así el orden no delata a nadie.
-        for cards in sorted(by_player.values(), key=lambda cs: cs[0].position):
-            submissions.append({"id": cards[0].id, "cards": [c.card.text for c in cards]})
+        # El id es un token opaco y el orden sale del mismo token: ni uno ni otro delatan
+        # quién jugó cada respuesta (la posición en el mazo sí seguía el orden de los jugadores).
+        for cards in by_player.values():
+            submissions.append({"id": _sub_token(game, cards[0].id),
+                                "cards": [c.text for c in cards],
+                                "golden": [c.is_golden for c in cards]})
+        submissions.sort(key=lambda sub: sub["id"])
 
     decks = []
     if game.state == Game.LOBBY:
@@ -477,6 +533,7 @@ def snapshot(game_id, player_id):
             "is_judge": me.id == game.judge_id,
             "has_played": me.id in played_ids,
             "rerolls_left": me.rerolls_left,
+            "golden_left": me.golden_left,
             "hand": hand,
         },
         "players": [

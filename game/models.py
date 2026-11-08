@@ -1,19 +1,21 @@
-from django.db import models
-
 import secrets
 import uuid
+
 from django.db import models
-from decks.models import Deck
 from django.utils import timezone
+
+from decks.models import Deck
 
 # Sin 0/O, 1/I/L para que el código sea fácil de dictar por WhatsApp/Discord
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+REROLLS_PER_GAME = 2   # cambios de carta por jugador y por partida
+GOLDEN_PER_GAME = 1    # cartas doradas (escritas por el jugador) por jugador y por partida
 
 
 def generate_code():
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(5))
 
-REROLLS_PER_GAME = 2
 
 class Game(models.Model):
     LOBBY, PLAYING, JUDGING, FINISHED = "lobby", "playing", "judging", "finished"
@@ -28,7 +30,8 @@ class Game(models.Model):
     max_players = models.PositiveSmallIntegerField(default=10)
     points_to_win = models.PositiveSmallIntegerField(default=7)
     created_at = models.DateTimeField(auto_now_add=True)
-    judge = models.ForeignKey("Player", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    judge = models.ForeignKey("Player", null=True, blank=True,
+                              on_delete=models.SET_NULL, related_name="+")
     round_number = models.PositiveSmallIntegerField(default=0)
     last_result = models.JSONField(null=True, blank=True)  # quién ganó la última ronda
 
@@ -47,6 +50,7 @@ class Player(models.Model):
     connections = models.PositiveSmallIntegerField(default=0)  # pestañas/sockets abiertos
     last_seen = models.DateTimeField(default=timezone.now)
     rerolls_left = models.PositiveSmallIntegerField(default=REROLLS_PER_GAME)
+    golden_left = models.PositiveSmallIntegerField(default=GOLDEN_PER_GAME)
 
     class Meta:
         constraints = [
@@ -55,17 +59,31 @@ class Player(models.Model):
 
     def __str__(self):
         return f"{self.nickname} ({self.game.code})"
-    
+
+
 class GameCard(models.Model):
-    """Una carta dentro de una partida concreta (mazo de robo, mano, jugada o descarte)."""
+    """Una carta dentro de una partida concreta (mazo de robo, mano, jugada o descarte).
+
+    Las cartas doradas no salen de ningún mazo: tienen card=None y el texto en custom_text.
+    Existen solo mientras dura la ronda en la que se juegan."""
     DECK, HAND, PLAYED, CURRENT, DISCARD = "deck", "hand", "played", "current", "discard"
 
     game = models.ForeignKey(Game, related_name="cards", on_delete=models.CASCADE)
-    card = models.ForeignKey("decks.Card", on_delete=models.CASCADE)
+    card = models.ForeignKey("decks.Card", null=True, blank=True, on_delete=models.CASCADE)
+    custom_text = models.CharField(max_length=300, blank=True)
     status = models.CharField(max_length=7, default=DECK)
-    player = models.ForeignKey(Player, null=True, blank=True, on_delete=models.SET_NULL, related_name="game_cards")
+    player = models.ForeignKey(Player, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="game_cards")
     position = models.IntegerField(default=0)       # orden del mazo mezclado
     slot = models.PositiveSmallIntegerField(null=True, blank=True)  # orden dentro de una jugada
 
     class Meta:
         indexes = [models.Index(fields=["game", "status"])]
+
+    @property
+    def text(self):
+        return self.card.text if self.card_id else self.custom_text
+
+    @property
+    def is_golden(self):
+        return self.card_id is None
