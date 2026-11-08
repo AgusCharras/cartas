@@ -200,7 +200,7 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 
 /* La fila destella, el puntaje "salta" y aparece un +1 que sube y se desvanece.
    --d es un delay negativo que pone la animación en el punto donde iba (ver room.html). */
-.prow.scored { animation: rowflash 1.6s ease-out both; animation-delay: var(--d, 0s); }
+.prow.scored { animation: rowflash 1.6s ease-out forwards; animation-delay: var(--d, 0s); }
 .prow.scored .score { animation: scorepop .8s cubic-bezier(.2, 1.6, .4, 1) both; animation-delay: var(--d, 0s); }
 .plus { position: absolute; left: 50%; top: 0; z-index: 5; pointer-events: none; white-space: nowrap;
         color: var(--accent); font-weight: 900; font-size: 1.3rem;
@@ -253,4 +253,79 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 
 @media (prefers-reduced-motion: reduce) {
   .c.gold::before { animation: none; }
+}
+
+/* ============ Revelación de la carta ganadora ============ */
+.reveal { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow: hidden;
+          cursor: pointer; --cw: clamp(140px, 15vw, 200px);
+          background: radial-gradient(circle at 50% 45%, #1d201e 0%, #0b0b0b 70%);
+          animation: revealfade .35s ease-out both; }
+.reveal::before { content: ""; position: absolute; inset: -50%; pointer-events: none;
+                  background: repeating-conic-gradient(rgba(111, 211, 154, .07) 0deg 8deg, transparent 8deg 20deg);
+                  animation: raysspin 40s linear infinite; }
+@keyframes raysspin { to { transform: rotate(360deg); } }
+@keyframes revealfade { from { opacity: 0; } to { opacity: 1; } }
+
+.ghostcard { position: absolute; width: 90px; height: 126px; border-radius: 12px;
+             border: 2px solid rgba(255, 255, 255, .06); background: rgba(255, 255, 255, .02); }
+.sparkle { position: absolute; color: var(--accent); font-size: 1.6rem; animation: twinkle 2s ease-in-out infinite; }
+@keyframes twinkle {
+  0%, 100% { opacity: .2; transform: scale(.7); }
+  50%      { opacity: 1; transform: scale(1.3) rotate(20deg); }
+}
+
+.reveal-stage { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center;
+                gap: clamp(1rem, 4vw, 4rem); padding: 1rem; }
+.reveal .c { font-size: clamp(.95rem, 1.5vw, 1.4rem); cursor: default; }
+.reveal .c.black { --r: -5deg; font-size: clamp(1.05rem, 1.7vw, 1.6rem);
+                   animation: slidel .7s cubic-bezier(.2, .9, .3, 1.2) both; }
+.reveal-whites { display: flex; gap: .8rem; }
+.reveal-whites .c { --r: 4deg; animation: flipin .8s cubic-bezier(.2, .9, .3, 1.1) .5s both; }
+.reveal-whites .c:nth-child(2) { --r: -3deg; animation-delay: .75s; }
+.reveal-whites .c:nth-child(3) { --r: 2deg; animation-delay: 1s; }
+@keyframes slidel {
+  from { opacity: 0; transform: translateX(-140px) rotate(calc(var(--r) - 14deg)); }
+  to   { opacity: 1; transform: translateX(0) rotate(var(--r)); }
+}
+@keyframes flipin {
+  from { opacity: 0; transform: perspective(900px) rotateY(88deg) rotate(var(--r)); }
+  60%  { opacity: 1; }
+  to   { opacity: 1; transform: perspective(900px) rotateY(0) rotate(var(--r)); }
+}
+
+.reveal-center { display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+.crown { font-size: clamp(2.5rem, 6vw, 4.5rem); filter: drop-shadow(0 0 14px rgba(245, 197, 66, .8));
+         animation: crowndrop .7s cubic-bezier(.2, 1.5, .4, 1) 1.05s both, crownfloat 2.4s ease-in-out 1.8s infinite; }
+@keyframes crowndrop {
+  from { opacity: 0; transform: translateY(-60px) scale(.5) rotate(-20deg); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes crownfloat { 50% { transform: translateY(-6px) rotate(3deg); } }
+
+.badge { display: flex; align-items: center; gap: 1rem; padding: .8rem 1.6rem .8rem .9rem;
+         background: #0e0e0e; border: 4px solid var(--accent); border-radius: 999px;
+         box-shadow: 0 0 30px rgba(111, 211, 154, .35); transform: rotate(-3deg);
+         animation: badgepop .6s cubic-bezier(.2, 1.6, .4, 1) 1.15s both; }
+.badge .avatar { width: 64px; height: 64px; font-size: 2.2rem; border: 3px solid var(--accent); }
+.badge-label { font-size: .9rem; color: var(--muted); }
+.badge-name { font-size: clamp(1.6rem, 3.4vw, 2.6rem); font-weight: 900; line-height: 1.1; }
+@keyframes badgepop {
+  from { opacity: 0; transform: scale(.4) rotate(-3deg); }
+  to   { opacity: 1; transform: scale(1) rotate(-3deg); }
+}
+.countpill { border: 3px solid var(--accent); border-radius: 999px; padding: .55rem 1.6rem;
+             color: var(--accent); font-weight: 800; font-size: 1.15rem; background: rgba(0, 0, 0, .4);
+             animation: revealfade .4s ease-out 1.6s both; }
+
+@media (max-width: 720px) {
+  .reveal { --cw: min(30vw, 130px); overflow-y: auto; place-items: start center; }
+  .reveal-stage { flex-direction: column; padding-top: 2rem; }
+  .reveal-center { order: 3; }
+  .reveal .c { font-size: .8rem; }
+  .reveal .c.black { font-size: .95rem; }
+}
+
+/* Con "reducir movimiento" no hay animaciones: la revelación se ve igual y termina sola */
+@media (prefers-reduced-motion: reduce) {
+  .reveal, .reveal::before, .reveal .c, .crown, .badge, .countpill, .sparkle { animation: none !important; }
 }

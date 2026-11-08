@@ -505,9 +505,11 @@ def snapshot(game_id, player_id):
         # El id es un token opaco y el orden sale del mismo token: ni uno ni otro delatan
         # quién jugó cada respuesta (la posición en el mazo sí seguía el orden de los jugadores).
         for cards in by_player.values():
+            # Ojo: NO se informa cuáles son doradas. Aunque el navegador no las pinte distinto,
+            # el dato viajaría en el mensaje y el juez podría verlo en las herramientas de desarrollo.
+            # Recién se revela en last_result, cuando ya eligió.
             submissions.append({"id": _sub_token(game, cards[0].id),
-                                "cards": [c.text for c in cards],
-                                "golden": [c.is_golden for c in cards]})
+                                "cards": [c.text for c in cards]})
         submissions.sort(key=lambda sub: sub["id"])
 
     decks = []

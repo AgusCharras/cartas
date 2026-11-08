@@ -11,6 +11,7 @@
 </div>
 
 <div id="toast" class="toast" hidden></div>
+<div id="reveal" class="reveal" role="dialog" aria-live="polite" hidden></div>
 
 <div class="layout">
   <section class="stage">
@@ -67,9 +68,20 @@
     return n;
   }
 
+  // Texto de una carta negra con cada "_" dibujado como un hueco subrayado
+  function fillBlanks(card, text) {
+    const t = node("span", undefined, "t");
+    text.split(/_+/).forEach((part, i) => {
+      if (i > 0) t.append(node("span", undefined, "blank"));
+      t.append(document.createTextNode(part));
+    });
+    card.replaceChildren(t);
+  }
+
   function cardNode(text, cls, onClick) {
     const n = node("div", text, "c " + cls);
     const kinds = cls.split(" ");
+    if (kinds.includes("black") && typeof text === "string") fillBlanks(n, text);
     n.dataset.brand = kinds.includes("black") ? "Cartas Arg" : kinds.includes("gold") ? "ARG · dorada" : "ARG";
     if (onClick) { n.classList.add("clickable"); n.onclick = onClick; }
     return n;
@@ -178,11 +190,91 @@
     if (prevScores) {
       for (const p of s.players) {
         if (prevScores[p.id] !== undefined && p.score > prevScores[p.id]) {
-          celebrating[p.id] = performance.now();
+          pendingCelebrate.add(p.id);  // se anima al cerrarse la revelación (ver closeReveal)
         }
       }
     }
     prevScores = Object.fromEntries(s.players.map((p) => [p.id, p.score]));
+  }
+
+  // ---- revelación de la carta ganadora ----
+  const REVEAL_SECONDS = 5;
+  const pendingCelebrate = new Set();  // quiénes suman +1: se anima en el tablero al cerrarse la revelación
+  let revealTimer = null;
+
+  function flushCelebrate() {
+    for (const id of pendingCelebrate) celebrating[id] = performance.now();
+    pendingCelebrate.clear();
+  }
+
+  function closeReveal() {
+    clearInterval(revealTimer);
+    revealTimer = null;
+    const box = $("reveal");
+    if (box.hidden) return;
+    box.hidden = true;
+    box.replaceChildren();
+    flushCelebrate();
+    if (state) renderPlayers(state);  // ahora sí se ve el +1 en el tablero
+  }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeReveal(); });
+
+  function showReveal(l, finished) {
+    closeReveal();
+    const box = $("reveal");
+    box.hidden = false;
+    box.replaceChildren();
+    box.onclick = closeReveal;  // tocar la pantalla la saltea
+
+    // Fondo: cartas fantasma y destellos
+    [[4, 12, -18], [20, 70, 12], [44, 6, 8], [62, 78, -10], [80, 10, 20], [90, 62, -14]].forEach(([x, y, r]) => {
+      const g = node("div", undefined, "ghostcard");
+      g.style.left = x + "%";
+      g.style.top = y + "%";
+      g.style.transform = `rotate(${r}deg)`;
+      box.append(g);
+    });
+    ["12% 22%", "50% 10%", "88% 24%", "8% 64%", "92% 68%", "48% 88%"].forEach((pos, i) => {
+      const [x, y] = pos.split(" ");
+      const sp = node("span", "✦", "sparkle");
+      sp.style.left = x;
+      sp.style.top = y;
+      sp.style.animationDelay = (i * 0.35) + "s";
+      box.append(sp);
+    });
+
+    const stage = node("div", undefined, "reveal-stage");
+    stage.append(cardNode(l.black, "black"));
+
+    // Centro: corona, quién ganó y cuenta regresiva
+    const isMe = !!state && state.me.nickname === l.winner;
+    const center = node("div", undefined, "reveal-center");
+    const badge = node("div", undefined, "badge");
+    badge.append(avatarNode(l.winner));
+    const txt = node("div");
+    txt.append(node("div", "La carta fue elegida por:", "badge-label"));
+    txt.append(node("div", isMe ? l.winner + " (vos) 🎉" : l.winner, "badge-name"));
+    badge.append(txt);
+    const count = node("div", undefined, "countpill");
+    center.append(node("div", "👑", "crown"), badge, count);
+    stage.append(center);
+
+    // Respuesta ganadora (acá sí se revela si era dorada: el juez ya eligió)
+    const whites = node("div", undefined, "reveal-whites");
+    l.cards.forEach((t, i) =>
+      whites.append(cardNode(t, "white" + (l.golden && l.golden[i] ? " gold" : ""))));
+    stage.append(whites);
+    box.append(stage);
+
+    let left = REVEAL_SECONDS;
+    const label = finished ? "Resultados en" : "Siguiente ronda en";
+    const paint = () => { count.textContent = `${label} ${left}…`; };
+    paint();
+    revealTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) closeReveal();
+      else paint();
+    }, 1000);
   }
 
   function renderResult(s, first) {
@@ -197,6 +289,7 @@
         r.classList.remove("pop");
         void r.offsetWidth;  // reinicia la animación
         r.classList.add("pop");
+        showReveal(l, s.state === "finished");
       }
     }
   }
@@ -385,8 +478,7 @@
       for (const sub of s.submissions) {
         const group = node("div", undefined, "sub" + (selectedSub === sub.id ? " selected" : "")
                                                     + (s.me.is_judge ? " clickable" : ""));
-        sub.cards.forEach((t, i) =>
-          group.append(cardNode(t, "white" + (sub.golden && sub.golden[i] ? " gold" : ""))));
+        sub.cards.forEach((t) => group.append(cardNode(t, "white")));
         if (s.me.is_judge) {
           group.onclick = () => { selectedSub = selectedSub === sub.id ? null : sub.id; renderMain(state); };
         }
@@ -496,6 +588,7 @@
     $("goal-pill").textContent = `A ${s.points_to_win} puntos`;
 
     renderResult(s, first);
+    if (pendingCelebrate.size && $("reveal").hidden) flushCelebrate();
     renderPlayers(s);
     renderControls(s);
     renderMain(s);
