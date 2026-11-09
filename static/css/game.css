@@ -329,3 +329,60 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 @media (prefers-reduced-motion: reduce) {
   .reveal, .reveal::before, .reveal .c, .crown, .badge, .countpill, .sparkle { animation: none !important; }
 }
+
+/* ============ Podio final ============ */
+.podium-stage { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center;
+                gap: 1.4rem; padding: 1rem; width: min(100%, 760px); }
+.podium-title { text-align: center; font-size: clamp(1.5rem, 3.6vw, 2.6rem); font-weight: 900; line-height: 1.15;
+                animation: titlein .6s cubic-bezier(.2, 1.4, .4, 1) both; }
+.podium-sub { color: var(--accent); font-size: .75em; margin-top: .3rem; }
+@keyframes titlein {
+  from { opacity: 0; transform: translateY(-24px) scale(.9); }
+  to   { opacity: 1; transform: none; }
+}
+
+.podiumrow { display: flex; align-items: flex-end; justify-content: center; gap: clamp(.5rem, 2vw, 1.2rem); }
+.pcol { display: flex; flex-direction: column; align-items: center; width: clamp(96px, 18vw, 190px); }
+
+.pwho { display: flex; flex-direction: column; align-items: center; gap: .15rem; margin-bottom: .6rem;
+        max-width: 100%; position: relative;
+        animation: whopop .6s cubic-bezier(.2, 1.6, .4, 1) var(--wd, 0s) both; }
+.pwho .avatar { width: clamp(56px, 9vw, 92px); height: clamp(56px, 9vw, 92px);
+                font-size: clamp(1.8rem, 4.5vw, 3rem); border: 3px solid var(--accent); }
+.pcol.rank1 .avatar { border-color: #f5c542; box-shadow: 0 0 26px rgba(245, 197, 66, .65); }
+.podname { font-weight: 800; font-size: clamp(1rem, 2.2vw, 1.5rem); max-width: 100%;
+         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.podpts { color: var(--accent); font-weight: 800; }
+.pcrown { font-size: clamp(1.8rem, 4.5vw, 3rem); filter: drop-shadow(0 0 12px rgba(245, 197, 66, .85));
+          animation: crowndrop .7s cubic-bezier(.2, 1.5, .4, 1) var(--cd, 0s) both,
+                     crownfloat 2.4s ease-in-out calc(var(--cd, 0s) + .8s) infinite; }
+@keyframes whopop {
+  from { opacity: 0; transform: translateY(24px) scale(.6); }
+  to   { opacity: 1; transform: none; }
+}
+
+.pblock { width: 100%; display: grid; place-items: start center; padding-top: .5rem;
+          font-weight: 900; font-size: clamp(1.8rem, 4.4vw, 3.2rem);
+          border: 2px solid rgba(111, 211, 154, .5); border-bottom: 0; border-radius: 14px 14px 0 0;
+          background: linear-gradient(180deg, #34423a, #1a201c);
+          transform-origin: bottom; animation: blockrise .8s cubic-bezier(.2, .9, .3, 1.1) var(--bd, 0s) both; }
+.pcol.rank1 .pblock { height: clamp(150px, 26vh, 250px); color: #2b1d00; border-color: #fff3c4;
+                      background: linear-gradient(180deg, #fff4b8, #f5c542 55%, #c88a10);
+                      box-shadow: 0 0 30px rgba(245, 197, 66, .35); }
+.pcol.rank2 .pblock { height: clamp(110px, 19vh, 180px); }
+.pcol.rank3 .pblock { height: clamp(80px, 13vh, 130px); }
+@keyframes blockrise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+
+.podium-btn { animation: revealfade .5s ease-out 3s both; }
+
+.confetti { position: absolute; top: -24px; width: 10px; height: 16px; border-radius: 2px; opacity: .9; z-index: 0;
+            animation: confall var(--t, 4s) linear var(--d, 0s) infinite; }
+@keyframes confall {
+  from { transform: translateY(0) rotate(0deg); }
+  to   { transform: translateY(115vh) rotate(720deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .podium-title, .pwho, .pblock, .pcrown, .podium-btn { animation: none !important; }
+  .confetti { display: none; }
+}

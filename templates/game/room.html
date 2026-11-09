@@ -12,6 +12,7 @@
 
 <div id="toast" class="toast" hidden></div>
 <div id="reveal" class="reveal" role="dialog" aria-live="polite" hidden></div>
+<div id="podium" class="reveal podium" role="dialog" aria-live="polite" hidden></div>
 
 <div class="layout">
   <section class="stage">
@@ -216,8 +217,14 @@
     box.replaceChildren();
     flushCelebrate();
     if (state) renderPlayers(state);  // ahora sí se ve el +1 en el tablero
+    if (podiumPending && state) {     // la partida terminó: después de la revelación viene el podio
+      podiumPending = false;
+      showPodium(state);
+    }
   }
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeReveal(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closePodium(); closeReveal(); }
+  });
 
   function showReveal(l, finished) {
     closeReveal();
@@ -275,6 +282,89 @@
       if (left <= 0) closeReveal();
       else paint();
     }, 1000);
+  }
+
+  // ---- podio final ----
+  let podiumPending = false;  // la partida terminó mientras se mostraba la revelación de la última ronda
+
+  function closePodium() {
+    const box = $("podium");
+    if (box.hidden) return;
+    box.hidden = true;
+    box.replaceChildren();
+  }
+
+  // Puestos con empates: 1, 1, 3 (dos jugadores con el mismo puntaje comparten el puesto)
+  function rankPlayers(players) {
+    const sorted = [...players].sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname));
+    return sorted.map((p) => ({ p, rank: 1 + sorted.filter((q) => q.score > p.score).length }));
+  }
+
+  function showPodium(s) {
+    closePodium();
+    const box = $("podium");
+    box.hidden = false;
+    box.replaceChildren();
+    box.onclick = closePodium;
+
+    // Confeti y destellos (solo decoración)
+    const colors = ["#6fd39a", "#f5c542", "#ff6b6b", "#7cc4ff", "#ffffff", "#c792ea"];
+    for (let i = 0; i < 60; i++) {
+      const c = node("span", undefined, "confetti");
+      c.style.left = (Math.random() * 100).toFixed(1) + "%";
+      c.style.background = colors[i % colors.length];
+      c.style.setProperty("--t", (3 + Math.random() * 3).toFixed(2) + "s");
+      c.style.setProperty("--d", (Math.random() * 3).toFixed(2) + "s");
+      box.append(c);
+    }
+    ["10% 20%", "50% 8%", "90% 22%", "6% 62%", "94% 66%"].forEach((pos, i) => {
+      const [x, y] = pos.split(" ");
+      const sp = node("span", "✦", "sparkle");
+      sp.style.left = x;
+      sp.style.top = y;
+      sp.style.animationDelay = (i * 0.4) + "s";
+      box.append(sp);
+    });
+
+    const ranked = rankPlayers(s.players);
+    const winners = ranked.filter((e) => e.rank === 1).map((e) => e.p.nickname);
+    const iWon = winners.includes(s.me.nickname);
+
+    const stage = node("div", undefined, "podium-stage");
+    const title = node("div", undefined, "podium-title");
+    title.append(node("div", "🏆 ¡Fin de la partida!"));
+    title.append(node("div",
+      iWon ? "¡Ganaste! 🎉" : winners.length > 1 ? "Empate: " + winners.join(" y ") : "¡Ganó " + winners[0] + "!",
+      "podium-sub"));
+    stage.append(title);
+
+    // Podio: 2.º a la izquierda, 1.º en el centro, 3.º a la derecha
+    const top = ranked.slice(0, 3);
+    const order = [top[1], top[0], top[2]].filter(Boolean);
+    const delays = { 1: [1.5, 2.2], 2: [0.9, 1.6], 3: [0.3, 1.0] };  // [sube el bloque, aparece la persona]
+    const podium = node("div", undefined, "podiumrow");
+    order.forEach(({ p, rank }) => {
+      const [bd, wd] = delays[rank];
+      const col = node("div", undefined, "pcol rank" + rank);
+      const who = node("div", undefined, "pwho");
+      who.style.setProperty("--wd", wd + "s");
+      if (rank === 1) {
+        const crown = node("div", "👑", "pcrown");
+        crown.style.setProperty("--cd", (wd + 0.5).toFixed(1) + "s");
+        who.append(crown);
+      }
+      who.append(avatarNode(p.nickname), node("div", p.nickname, "podname"), node("div", p.score + " pts", "podpts"));
+      const block = node("div", String(rank), "pblock");
+      block.style.setProperty("--bd", bd + "s");
+      col.append(who, block);
+      podium.append(col);
+    });
+    stage.append(podium);
+
+    const btn = node("button", "Ver resultados", "bigbtn podium-btn");
+    btn.onclick = closePodium;
+    stage.append(btn);
+    box.append(stage);
   }
 
   function renderResult(s, first) {
@@ -455,6 +545,9 @@
     const ul = node("ul", undefined, "decklist");
     ranking.forEach((p, i) => ul.append(node("li", `${medals[i] || "▫️"} ${p.nickname} — ${p.score} pts`)));
     main.append(ul);
+    const pb = node("button", "🏆 Ver podio");
+    pb.onclick = () => showPodium(s);
+    main.append(pb, " ");
     const a = node("a", "Volver al inicio", "btn");
     a.href = "{% url 'game:home' %}";
     main.append(a);
@@ -573,6 +666,7 @@
 
   function render(s) {
     const first = state === null;  // primer estado recibido (entrada o recarga)
+    const justFinished = !first && s.state === "finished" && state.state !== "finished";
     trackScores(s);
     state = s;
     const ids = new Set(s.me.hand.map((c) => c.id));
@@ -588,6 +682,10 @@
     $("goal-pill").textContent = `A ${s.points_to_win} puntos`;
 
     renderResult(s, first);
+    if (justFinished) {
+      if ($("reveal").hidden) showPodium(s);  // terminó sin una última revelación (p. ej. se fueron jugadores)
+      else podiumPending = true;              // se muestra cuando se cierre la revelación de la última ronda
+    }
     if (pendingCelebrate.size && $("reveal").hidden) flushCelebrate();
     renderPlayers(s);
     renderControls(s);

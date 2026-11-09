@@ -1,4 +1,6 @@
 import json
+import re
+
 from django.db import transaction
 from .models import Deck, Card
 
@@ -34,15 +36,17 @@ def parse_deck(raw: bytes) -> dict:
 
     clean_black = []
     for i, item in enumerate(black, 1):
+        # La carta puede ser un texto o un objeto {"text": "..."} (el campo "pick" se ignora:
+        # una negra pide una respuesta por cada hueco "_", igual que en el editor de mazos).
         text = str(item.get("text", "") if isinstance(item, dict) else item).strip()
-        pick = item.get("pick", 1) if isinstance(item, dict) else 1
         if not text or len(text) > MAX_TEXT_LEN:
             raise DeckImportError(f"Carta negra #{i}: texto vacío o demasiado largo.")
-        if "_" not in text:
+        blanks = len(re.findall(r"_+", text))  # "_____" cuenta como un solo hueco
+        if blanks == 0:
             raise DeckImportError(f"Carta negra #{i}: tiene que tener al menos un '_'.")
-        if pick not in (1, 2, 3):
-            raise DeckImportError(f"Carta negra #{i}: 'pick' debe ser 1, 2 o 3.")
-        clean_black.append((text, pick))
+        if blanks > 3:
+            raise DeckImportError(f"Carta negra #{i}: máximo 3 huecos.")
+        clean_black.append((text, blanks))
 
     clean_white = []
     for i, item in enumerate(white, 1):

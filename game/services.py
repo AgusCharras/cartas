@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import random
+import re
 from datetime import timedelta
 
 from django.conf import settings
@@ -34,6 +35,16 @@ def _lock(game_id):
 
 def _current_black(game):
     return game.cards.select_related("card").get(status=GameCard.CURRENT)
+
+
+def _pick_of(card):
+    """Cuántas respuestas pide una carta negra: una por cada hueco «_» (entre 1 y 3).
+
+    Se calcula del texto y no del campo `pick` de la base, así siempre coincide con lo que
+    los jugadores ven en la carta, aunque el mazo se haya cargado con un `pick` incorrecto
+    (por ejemplo, importado desde un JSON de texto plano o armado desde el admin)."""
+    blanks = len(re.findall(r"_+", card.text))
+    return min(max(blanks, 1), 3)
 
 
 def _sub_token(game, first_card_id):
@@ -140,7 +151,7 @@ def play_cards(game_id, player_id, card_ids, golden=None):
     if game.cards.filter(status=GameCard.PLAYED, player_id=player_id).exists():
         raise GameError("Ya jugaste en esta ronda.")
 
-    pick = _current_black(game).card.pick
+    pick = _pick_of(_current_black(game).card)
     if len(card_ids) + (1 if golden else 0) != pick or len(set(card_ids)) != len(card_ids):
         raise GameError(f"Tenés que elegir {pick} carta(s) distintas.")
 
@@ -489,7 +500,7 @@ def snapshot(game_id, player_id):
     black = None
     if in_round:
         card = _current_black(game).card
-        black = {"text": card.text, "pick": card.pick}
+        black = {"text": card.text, "pick": _pick_of(card)}
 
     hand = []
     if in_round:
