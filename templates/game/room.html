@@ -387,9 +387,26 @@
   function renderPlayers(s) {
     $("pcount").textContent = s.players.length;
     const ul = $("players");
+
+    // Posición de cada fila antes de redibujar (respecto del borde de la lista), para animar el cambio de orden
+    const before = {};
+    const o0 = ul.getBoundingClientRect().top;
+    for (const row of ul.children) before[row.dataset.pid] = row.getBoundingClientRect().top - o0;
+
+    // En partida se ordena por puntaje (a igual puntaje, por orden de entrada).
+    // Mientras se muestra la revelación de la ronda, el ganador cuenta con su puntaje anterior:
+    // así el cambio de lugar y el "match point" se ven recién cuando se cierra (ver closeReveal).
+    const inGame = s.state !== "lobby";
+    const eff = (p) => (pendingCelebrate.has(p.id) ? p.score - 1 : p.score);
+    const list = inGame ? [...s.players].sort((a, b) => eff(b) - eff(a)) : s.players;
+    const goal = s.points_to_win;
+
     ul.replaceChildren();
-    for (const p of s.players) {
-      const li = node("li", undefined, "prow" + (p.online ? "" : " offline"));
+    for (const p of list) {
+      // Match point: le falta un punto para ganar (solo mientras la partida sigue en juego)
+      const matchPoint = inGame && s.state !== "finished" && goal > 1 && eff(p) === goal - 1;
+      const li = node("li", undefined, "prow" + (p.online ? "" : " offline") + (matchPoint ? " matchpoint" : ""));
+      li.dataset.pid = p.id;
       li.append(avatarNode(p.nickname));
 
       const name = node("div", undefined, "pname");
@@ -398,6 +415,7 @@
       if (p.is_judge && s.state !== "lobby") name.append(node("span", " ⚖️"));
       if (s.state === "playing" && !p.is_judge) name.append(node("span", p.has_played ? " ✅" : " ⏳"));
       if (!p.online) name.append(node("span", " 🔌"));
+      if (matchPoint) name.append(node("div", "⚡ MATCH POINT", "mp-tag"));
       li.append(name);
 
       if (s.me.is_host && p.id !== s.me.id && s.state !== "finished") {
@@ -424,6 +442,22 @@
       }
       li.append(scoreEl);
       ul.append(li);
+    }
+
+    // Reordenamiento animado: cada fila arranca donde estaba y se desliza a su lugar nuevo.
+    // Si justo se mostró un +1, se espera un instante para que se note antes de moverse.
+    const o1 = ul.getBoundingClientRect().top;
+    const wait = Math.max(0, ...Object.values(celebrating).map((t) => 700 - (performance.now() - t)));
+    for (const row of ul.children) {
+      const was = before[row.dataset.pid];
+      if (was === undefined) continue;  // jugador nuevo: no hay de dónde venir
+      const dy = was - (row.getBoundingClientRect().top - o1);
+      if (Math.abs(dy) < 1) continue;
+      row.style.transition = "none";
+      row.style.transform = `translateY(${dy}px)`;
+      void row.offsetHeight;  // fija la posición de partida antes de animar
+      row.style.transition = `transform .6s cubic-bezier(.2, .8, .2, 1) ${Math.round(wait)}ms`;
+      row.style.transform = "";
     }
   }
 

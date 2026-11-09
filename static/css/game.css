@@ -218,8 +218,8 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
   100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(111, 211, 154, 0); }
 }
 @keyframes rowflash {
-  0%   { background: rgba(111, 211, 154, .3); }
-  100% { background: transparent; }
+  0%   { background-color: rgba(111, 211, 154, .3); }
+  100% { background-color: transparent; }
 }
 
 /* Banner del resultado: entra con un pequeño rebote */
@@ -385,4 +385,36 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 @media (prefers-reduced-motion: reduce) {
   .podium-title, .pwho, .pblock, .pcrown, .podium-btn { animation: none !important; }
   .confetti { display: none; }
+}
+
+/* ============ Match point: a un punto de ganar ============ */
+.prow.matchpoint { box-shadow: inset 0 0 0 2px #f5c542, 0 0 18px rgba(245, 197, 66, .45);
+                   background-image: linear-gradient(90deg, rgba(245, 197, 66, .18), rgba(245, 197, 66, .04));
+                   animation: tremble 2.4s ease-in-out infinite; }
+.prow.matchpoint .pname { color: #ffd966; }
+.prow.matchpoint .avatar { box-shadow: 0 0 0 3px #f5c542, 0 0 14px rgba(245, 197, 66, .8); }
+.prow.matchpoint .score { background: #f5c542; color: #2b1d00; box-shadow: 0 0 12px rgba(245, 197, 66, .8); }
+.mp-tag { font-size: .68rem; font-weight: 900; letter-spacing: .08em; color: #f5c542;
+          animation: mpblink 1.2s ease-in-out infinite; }
+@keyframes mpblink { 50% { opacity: .5; } }
+
+/* Tiembla un instante y se queda quieto el resto del ciclo. Usa las propiedades `translate` y `rotate`
+   (no `transform`) para no pelearse con el deslizamiento del reordenamiento. */
+@keyframes tremble {
+  0%, 36%, 100% { translate: 0 0;      rotate: 0deg; }
+  4%  { translate: -2px 0;  rotate: -.8deg; }
+  8%  { translate: 2px 1px; rotate: .8deg; }
+  12% { translate: -2px -1px; rotate: -.8deg; }
+  16% { translate: 2px 0;   rotate: .8deg; }
+  20% { translate: -1px 1px; rotate: -.5deg; }
+  24% { translate: 1px 0;   rotate: .5deg; }
+  28% { translate: -1px 0;  rotate: -.3deg; }
+  32% { translate: 0 0;     rotate: 0deg; }
+}
+/* Si además está mostrando el +1, las dos animaciones conviven */
+.prow.matchpoint.scored { animation: rowflash 1.6s ease-out forwards, tremble 2.4s ease-in-out infinite;
+                          animation-delay: var(--d, 0s), 0s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .prow.matchpoint, .prow.matchpoint.scored, .mp-tag { animation: none !important; }
 }
