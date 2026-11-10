@@ -112,7 +112,9 @@
     n.dataset.brand = "ARG · dorada";
     n.onclick = () => toggle("G", pick);
     const prefix = on && pick > 1 ? (idx + 1) + ". " : "";
-    n.append(node("div", prefix + "⭐ Carta dorada", "gtitle"));
+    const stock = state && state.me.golden_left > 1 ? ` (${state.me.golden_left})` : "";
+    const worth = state && state.golden_double ? " · x2" : "";
+    n.append(node("div", prefix + "⭐ Carta dorada" + stock + worth, "gtitle"));
     if (on) {
       const ta = node("textarea");
       ta.id = "golden-input";
@@ -191,7 +193,8 @@
     if (prevScores) {
       for (const p of s.players) {
         if (prevScores[p.id] !== undefined && p.score > prevScores[p.id]) {
-          pendingCelebrate.add(p.id);  // se anima al cerrarse la revelación (ver closeReveal)
+          // se anima al cerrarse la revelación (ver closeReveal); se guarda cuántos puntos sumó
+          pendingCelebrate.set(p.id, p.score - prevScores[p.id]);
         }
       }
     }
@@ -200,11 +203,15 @@
 
   // ---- revelación de la carta ganadora ----
   const REVEAL_SECONDS = 5;
-  const pendingCelebrate = new Set();  // quiénes suman +1: se anima en el tablero al cerrarse la revelación
+  const pendingCelebrate = new Map();  // jugador -> puntos que sumó: se anima al cerrarse la revelación
+  const celebrateDelta = {};           // jugador -> puntos que muestra el "+N" flotante
   let revealTimer = null;
 
   function flushCelebrate() {
-    for (const id of pendingCelebrate) celebrating[id] = performance.now();
+    for (const [id, delta] of pendingCelebrate) {
+      celebrating[id] = performance.now();
+      celebrateDelta[id] = delta;
+    }
     pendingCelebrate.clear();
   }
 
@@ -261,6 +268,7 @@
     const txt = node("div");
     txt.append(node("div", "La carta fue elegida por:", "badge-label"));
     txt.append(node("div", isMe ? l.winner + " (vos) 🎉" : l.winner, "badge-name"));
+    if (l.points > 1) txt.append(node("div", "⭐ ¡Carta dorada: vale " + l.points + " puntos!", "badge-bonus"));
     badge.append(txt);
     const count = node("div", undefined, "countpill");
     center.append(node("div", "👑", "crown"), badge, count);
@@ -397,7 +405,7 @@
     // Mientras se muestra la revelación de la ronda, el ganador cuenta con su puntaje anterior:
     // así el cambio de lugar y el "match point" se ven recién cuando se cierra (ver closeReveal).
     const inGame = s.state !== "lobby";
-    const eff = (p) => (pendingCelebrate.has(p.id) ? p.score - 1 : p.score);
+    const eff = (p) => (pendingCelebrate.has(p.id) ? p.score - pendingCelebrate.get(p.id) : p.score);
     const list = inGame ? [...s.players].sort((a, b) => eff(b) - eff(a)) : s.players;
     const goal = s.points_to_win;
 
@@ -435,7 +443,7 @@
           // desde donde iba (delay negativo) en vez de arrancar de cero.
           li.classList.add("scored");
           li.style.setProperty("--d", `-${Math.round(elapsed)}ms`);
-          scoreEl.append(node("span", "+1", "plus"));
+          scoreEl.append(node("span", "+" + (celebrateDelta[p.id] || 1), "plus"));
         } else {
           delete celebrating[p.id];
         }
@@ -488,10 +496,72 @@
     box.append(leave);
   }
 
+  // ---- reglas de la partida (el host las cambia en el lobby; los demás las ven) ----
+  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5] };  // igual que en el servidor
+
+  function setRule(values) {
+    send({ action: "settings", values });
+  }
+
+  // Fila "nombre  [−] valor [+]" (solo lectura si no sos el host)
+  function stepperRow(s, label, key, value, unit) {
+    const row = node("div", undefined, "rule");
+    row.append(node("div", label, "rule-label"));
+    const ctl = node("div", undefined, "stepper");
+    const [min, max] = RANGES[key];
+    if (s.me.is_host) {
+      const minus = node("button", "−", "step");
+      minus.disabled = value <= min;
+      minus.onclick = () => setRule({ [key]: value - 1 });
+      ctl.append(minus);
+    }
+    ctl.append(node("div", value + (unit ? " " + unit : ""), "rule-value"));
+    if (s.me.is_host) {
+      const plus = node("button", "+", "step");
+      plus.disabled = value >= max;
+      plus.onclick = () => setRule({ [key]: value + 1 });
+      ctl.append(plus);
+    }
+    row.append(ctl);
+    return row;
+  }
+
+  function renderRules(main, s) {
+    const box = node("div", undefined, "rules");
+    box.append(node("h3", "Reglas de la partida"));
+
+    box.append(stepperRow(s, "🎯 Puntos para ganar", "points_to_win", s.points_to_win, ""));
+    if (s.me.is_host) {  // atajos para las duraciones más comunes
+      const chips = node("div", undefined, "chips");
+      for (const n of [3, 5, 7, 10]) {
+        const c = node("button", String(n), "chip" + (s.points_to_win === n ? " on" : ""));
+        c.onclick = () => setRule({ points_to_win: n });
+        chips.append(c);
+      }
+      box.append(chips);
+    }
+    box.append(stepperRow(s, "🔄 Cambios de carta por jugador", "rerolls", s.rerolls_per_player, ""));
+    box.append(stepperRow(s, "⭐ Cartas doradas por jugador", "golden", s.golden_per_player, ""));
+
+    // La dorada vale doble: solo tiene sentido si hay doradas
+    const dbl = node("label", undefined, "rule dbl" + (s.golden_per_player === 0 ? " off" : ""));
+    const chk = node("input");
+    chk.type = "checkbox";
+    chk.checked = s.golden_double && s.golden_per_player > 0;
+    chk.disabled = !s.me.is_host || s.golden_per_player === 0;
+    chk.onchange = () => setRule({ golden_double: chk.checked });
+    dbl.append(chk, node("span", " Ganar con una carta dorada vale 2 puntos"));
+    box.append(dbl);
+
+    box.append(node("p", s.golden_per_player > 0
+      ? "La carta dorada la escribe cada jugador y se juega como una respuesta más."
+      : "Sin cartas doradas en esta partida.", "muted"));
+    main.append(box);
+  }
+
   function renderLobby(main, s, keepFocus) {
     main.append(node("h3", "Esperando jugadores"));
     main.append(node("p", `Se necesitan al menos ${s.min_players} para empezar.`, "muted"));
-    main.append(node("p", "⭐ Cada jugador tiene 1 carta dorada por partida: la escribe él mismo y la juega como respuesta.", "muted"));
 
     main.append(node("h3", "Mazos de la sala"));
     if (!s.decks.length) main.append(node("p", "Todavía no hay mazos.", "muted"));
@@ -515,6 +585,8 @@
       problem = `Hacen falta al menos ${s.needed_whites} cartas blancas para ${s.players.length} jugadores (hay ${whites}).`;
     }
     if (problem) main.append(node("p", problem, "error"));
+
+    renderRules(main, s);
 
     if (!s.me.is_host) {
       main.append(node("p", "Esperá a que el host empiece la partida."));
@@ -642,7 +714,8 @@
             send({ action: "reroll", card: selected[0] });
           }
         };
-        actions.append(play, rr);
+        if (s.rerolls_per_player > 0) actions.append(play, rr);
+        else actions.append(play);
       }
     } else if (s.me.is_judge) {
       const win = node("button", "🏆 Elegir ganadora", "bigbtn");
@@ -713,7 +786,8 @@
     $("round-pill").textContent =
       s.state === "lobby" ? "Lobby" : s.state === "finished" ? "Partida terminada" : `Ronda ${s.round}`;
     $("goal-pill").hidden = s.state === "lobby";
-    $("goal-pill").textContent = `A ${s.points_to_win} puntos`;
+    $("goal-pill").textContent = `A ${s.points_to_win} puntos`
+      + (s.golden_double && s.golden_per_player > 0 ? " · ⭐ vale 2" : "");
 
     renderResult(s, first);
     if (justFinished) {

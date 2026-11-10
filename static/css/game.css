@@ -418,3 +418,29 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 @media (prefers-reduced-motion: reduce) {
   .prow.matchpoint, .prow.matchpoint.scored, .mp-tag { animation: none !important; }
 }
+
+/* ============ Reglas de la partida (lobby) ============ */
+.rules { background: var(--panel-2); border: 1px solid var(--border); border-radius: 14px;
+         padding: .9rem 1.1rem; margin: 1rem 0; }
+.rules h3 { margin: 0 0 .6rem; }
+.rule { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .4rem 0; }
+.rule-label { font-weight: 600; }
+.stepper { display: flex; align-items: center; gap: .5rem; }
+.rule-value { min-width: 3.2rem; text-align: center; font-weight: 800; font-size: 1.15rem; color: var(--accent); }
+.step { width: 2rem; height: 2rem; padding: 0; border-radius: 50%; font-size: 1.2rem; line-height: 1;
+        background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+.chips { display: flex; gap: .4rem; justify-content: flex-end; margin: -.1rem 0 .3rem; }
+.chip { padding: .2rem .8rem; border-radius: 999px; font-size: .85rem;
+        background: transparent; color: var(--muted); border: 1px solid var(--border); }
+.chip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.rule.dbl { justify-content: flex-start; cursor: pointer; }
+.rule.dbl.off { opacity: .45; cursor: default; }
+.rule.dbl input { margin-right: .3rem; }
+
+/* La insignia de la revelación avisa cuando la dorada valió doble */
+.badge-bonus { margin-top: .2rem; font-size: .85rem; font-weight: 800; color: #f5c542;
+               text-shadow: 0 0 10px rgba(245, 197, 66, .6); }
+
+@media (max-width: 520px) {
+  .rule { flex-wrap: wrap; }
+}

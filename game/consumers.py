@@ -98,6 +98,16 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             elif action == "claim_host":
                 await self.run(services.claim_host)
 
+            elif action == "settings":
+                values = content.get("values")
+                if not isinstance(values, dict):
+                    raise GameError("Ajustes inválidos.")
+                clean = {}
+                for key in ("points_to_win", "rerolls", "golden", "golden_double"):
+                    if key in values:
+                        clean[key] = values[key]  # el tipo y el rango los valida el servicio
+                await self.run(services.update_settings, clean)
+
             elif action == "add_deck":
                 deck_id, code = content.get("deck"), content.get("code")
                 if type(deck_id) is int:

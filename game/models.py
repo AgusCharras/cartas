@@ -29,6 +29,10 @@ class Game(models.Model):
     state = models.CharField(max_length=10, choices=STATE_CHOICES, default=LOBBY)
     max_players = models.PositiveSmallIntegerField(default=10)
     points_to_win = models.PositiveSmallIntegerField(default=7)
+    # Ajustes que el host elige en el lobby (se aplican a cada jugador al empezar la partida)
+    rerolls_per_player = models.PositiveSmallIntegerField(default=REROLLS_PER_GAME)
+    golden_per_player = models.PositiveSmallIntegerField(default=GOLDEN_PER_GAME)
+    golden_double = models.BooleanField(default=False)  # la carta dorada ganadora vale 2 puntos
     created_at = models.DateTimeField(auto_now_add=True)
     judge = models.ForeignKey("Player", null=True, blank=True,
                               on_delete=models.SET_NULL, related_name="+")

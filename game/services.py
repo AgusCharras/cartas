@@ -17,6 +17,9 @@ HAND_SIZE = 7
 MIN_PLAYERS = 3        # para empezar la partida
 MIN_TO_CONTINUE = 2    # si quedan menos, la partida termina
 MAX_DECKS_PER_GAME = 8
+POINTS_RANGE = (1, 20)    # puntos para ganar
+REROLLS_RANGE = (0, 10)   # cambios de carta por jugador
+GOLDEN_RANGE = (0, 5)     # cartas doradas por jugador (0 = no hay)
 MIN_GOLDEN_LEN = 3      # largo de la carta dorada que escribe el jugador
 MAX_GOLDEN_LEN = 140
 GRACE = timedelta(seconds=20)   # cuánto debe llevar desconectado el host para poder tomarle el rol
@@ -118,6 +121,8 @@ def start_game(game_id, player_id):
     GameCard.objects.bulk_create(
         [GameCard(game=game, card=c, position=i) for i, c in enumerate(cards)]
     )
+    # Los ajustes se eligen en el lobby: recién ahora se reparten a cada jugador
+    game.players.update(rerolls_left=game.rerolls_per_player, golden_left=game.golden_per_player)
     for p in players:
         _deal(game, p, HAND_SIZE)
 
@@ -168,7 +173,8 @@ def play_cards(game_id, player_id, card_ids, golden=None):
         if me is None:
             raise GameError("Ya no estás en esta sala.")
         if me.golden_left <= 0:
-            raise GameError("Ya usaste tu carta dorada en esta partida.")
+            raise GameError("Ya usaste tu carta dorada en esta partida." if game.golden_per_player
+                            else "En esta partida no hay cartas doradas.")
 
     hand = {gc.id: gc for gc in game.cards.filter(
         status=GameCard.HAND, player_id=player_id, id__in=card_ids)}
@@ -207,7 +213,8 @@ def reroll_card(game_id, player_id, card_id):
     if game.cards.filter(status=GameCard.PLAYED, player=player).exists():
         raise GameError("Ya jugaste en esta ronda.")
     if player.rerolls_left <= 0:
-        raise GameError("No te quedan cambios.")
+        raise GameError("No te quedan cambios." if game.rerolls_per_player
+                        else "En esta partida no hay cambios de carta.")
 
     old = game.cards.filter(pk=card_id, status=GameCard.HAND, player=player).first()
     if old is None:
@@ -246,9 +253,12 @@ def pick_winner(game_id, player_id, submission_id):
                         .order_by("slot").select_related("card"))
     black = _current_black(game)
 
-    winner.score += 1
+    # Si el host lo activó, ganar con una carta dorada vale 2 puntos
+    gain = 2 if game.golden_double and any(gc.is_golden for gc in winner_cards) else 1
+    winner.score += gain
     winner.save(update_fields=["score"])
     game.last_result = {
+        "points": gain,
         "round": game.round_number,
         "winner": winner.nickname,
         "black": black.card.text,
@@ -432,6 +442,35 @@ def claim_host(game_id, player_id):
     me.save(update_fields=["is_host"])
 
 
+# ---------- ajustes de la partida (solo en el lobby) ----------
+
+@transaction.atomic
+def update_settings(game_id, player_id, values):
+    """values: dict con alguna de estas claves: points_to_win, rerolls, golden, golden_double."""
+    game = _lock(game_id)
+    _require_host(game, player_id)
+    if game.state != Game.LOBBY:
+        raise GameError("Los ajustes solo se pueden cambiar antes de empezar.")
+
+    def in_range(name, value, bounds):
+        low, high = bounds
+        if type(value) is not int or not low <= value <= high:
+            raise GameError(f"{name}: tiene que estar entre {low} y {high}.")
+        return value
+
+    if "points_to_win" in values:
+        game.points_to_win = in_range("Puntos para ganar", values["points_to_win"], POINTS_RANGE)
+    if "rerolls" in values:
+        game.rerolls_per_player = in_range("Cambios de carta", values["rerolls"], REROLLS_RANGE)
+    if "golden" in values:
+        game.golden_per_player = in_range("Cartas doradas", values["golden"], GOLDEN_RANGE)
+    if "golden_double" in values:
+        if type(values["golden_double"]) is not bool:
+            raise GameError("Ajuste inválido.")
+        game.golden_double = values["golden_double"]
+    game.save()
+
+
 # ---------- mazos de la sala (solo en el lobby) ----------
 
 def _can_use_deck(deck, token, by_code):
@@ -538,6 +577,9 @@ def snapshot(game_id, player_id):
         "state": game.state,
         "round": game.round_number,
         "points_to_win": game.points_to_win,
+        "rerolls_per_player": game.rerolls_per_player,
+        "golden_per_player": game.golden_per_player,
+        "golden_double": game.golden_double,
         "min_players": MIN_PLAYERS,
         "me": {
             "id": me.id,
