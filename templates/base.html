@@ -5,14 +5,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Cartas Arg{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'css/game.css' %}?v=10">
+  <link rel="stylesheet" href="{% static 'css/game.css' %}?v=11">
 </head>
 <body>
   <div class="wrap {% block wrapclass %}{% endblock %}">
+    {% block header %}
     <header class="top">
       <h1 class="logo"><a href="{% url 'game:home' %}">Cartas <span>Arg</span></a></h1>
       <nav><a href="{% url 'decks:list' %}">Mis mazos</a></nav>
     </header>
+    {% endblock %}
     {% for m in messages %}<div class="msg {{ m.tags }}">{{ m }}</div>{% endfor %}
     {% block content %}{% endblock %}
   </div>

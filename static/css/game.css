@@ -444,3 +444,86 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
 @media (max-width: 520px) {
   .rule { flex-wrap: wrap; }
 }
+
+/* ============ Menú principal ============ */
+.menu-page { padding: .6rem; }
+.menu { position: relative; isolation: isolate; overflow: hidden; border-radius: 28px;
+        min-height: min(92vh, 780px); display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr);
+        align-items: center; gap: 2rem; padding: clamp(1.2rem, 4vw, 3.5rem);
+        background: radial-gradient(circle at 72% 42%, #1c1f1d 0%, #0b0b0b 72%); }
+/* Rayos que giran muy despacio detrás de todo */
+.menu::before { content: ""; position: absolute; inset: -70%; z-index: -1; pointer-events: none;
+                background: repeating-conic-gradient(from 20deg at 62% 48%, rgba(111, 211, 154, .055) 0deg 7deg, transparent 7deg 18deg);
+                animation: raysspin 120s linear infinite; }
+.menu-bg { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+
+.menu-left { display: flex; flex-direction: column; gap: 1.6rem; align-items: flex-start; }
+
+/* Marca */
+.brand { display: flex; align-items: flex-end; gap: 1rem; }
+.mascot { width: clamp(150px, 19vw, 250px); height: auto; margin-left: -.6rem; transform-origin: 50% 100%;
+          filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .6)); animation: mascotbob 3.6s ease-in-out infinite; }
+@keyframes mascotbob { 50% { transform: translateY(-6px) rotate(1.5deg); } }
+.brand-title { margin: 0 0 1rem; font-size: clamp(2.4rem, 5.4vw, 4.4rem); line-height: .95; font-weight: 900;
+               letter-spacing: -.02em; transform: rotate(-4deg); text-shadow: 0 4px 0 rgba(0, 0, 0, .5); }
+.brand-title .script { display: block; margin: .15em 0 0 1.1em; color: var(--accent); font-weight: 400;
+                       font-size: .72em; letter-spacing: 0; transform: rotate(-5deg);
+                       font-family: "Segoe Script", "Bradley Hand", "Lucida Handwriting", "Comic Sans MS", cursive; }
+
+/* Botones del menú */
+.menu-buttons { display: flex; flex-direction: column; gap: 1.1rem; width: min(100%, 460px); }
+.mbtn { --tilt: -2deg; display: flex; align-items: center; gap: 1rem; width: 100%; padding: .95rem 1.7rem;
+        border-radius: 999px; cursor: pointer; font: inherit; font-weight: 800; font-size: 1.15rem;
+        text-align: left; text-decoration: none; color: #cfcfd4;
+        background: linear-gradient(180deg, #2b2b30, #1b1b1e); border: 2px solid #3e3e45;
+        box-shadow: 0 8px 0 #0e0e10, 0 16px 26px rgba(0, 0, 0, .5);
+        transform: rotate(var(--tilt));
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, color .18s ease; }
+.mbtn:nth-child(2) { --tilt: 1deg; }
+.mbtn:nth-child(3) { --tilt: 2.5deg; }
+.mbtn svg { width: 2rem; height: 2rem; flex: none; opacity: .85; transition: color .18s; }
+.mbtn:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+/* El botón activo se agranda y se ilumina en verde */
+.mbtn.sel { transform: rotate(var(--tilt)) scale(1.07); color: #fff; border-color: var(--accent);
+            background: linear-gradient(180deg, #1d2c23, #101713);
+            box-shadow: 0 0 0 4px rgba(111, 211, 154, .22), 0 0 36px rgba(111, 211, 154, .5), 0 8px 0 #0a0f0c; }
+.mbtn.sel svg { color: var(--accent); opacity: 1; }
+
+/* Paneles de crear / buscar */
+.menu-panel { width: min(100%, 460px); background: rgba(22, 22, 25, .94); border: 1px solid var(--border);
+              border-radius: 18px; padding: 1rem 1.2rem 1.2rem; animation: panelin .25s ease-out both; }
+.menu-panel h3 { margin: 0 0 .2rem; }
+.menu-panel .muted { margin: 0 0 .7rem; }
+.menu-decks { max-height: 150px; overflow-y: auto; margin-bottom: .8rem; }
+.menu-decks label { display: flex; gap: .5rem; align-items: center; padding: .2rem 0; }
+.menu-panel .bigbtn { width: 100%; padding: .75rem; font-size: 1.05rem; }
+.menu-panel input[name=code] { width: 100%; margin-bottom: .8rem; font-size: 1.5rem; letter-spacing: .35rem;
+                               text-transform: uppercase; text-align: center; }
+@keyframes panelin { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+/* Carta negra de adorno */
+.menu-right { display: grid; place-items: center; }
+.cardstack { position: relative; width: clamp(250px, 30vw, 420px); aspect-ratio: 3 / 4;
+             animation: stackfloat 5.5s ease-in-out infinite; }
+@keyframes stackfloat { 50% { transform: translateY(-10px) rotate(.8deg); } }
+.mcard { position: absolute; inset: 0; border-radius: 30px; display: flex; flex-direction: column;
+         padding: 9% 9% 7%; box-shadow: 0 18px 40px rgba(0, 0, 0, .6); }
+.mcard.back { background: var(--paper); transform: rotate(7deg) translate(10%, 4%); }
+.mcard.front { background: #070707; color: #fff; border: 5px solid #f3f3f3; transform: rotate(-4deg);
+               font-weight: 800; font-size: clamp(1.15rem, 2.2vw, 1.9rem); line-height: 1.2; }
+.mcard .prompt { margin: 0; }
+.mcard .prompt.swap { animation: promptin .5s ease-out both; }
+@keyframes promptin { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.mbrand { margin-top: auto; font-size: .85rem; font-weight: 700; opacity: .7; letter-spacing: .04em; }
+
+@media (max-width: 900px) {
+  .menu { grid-template-columns: 1fr; min-height: 0; padding: 1.2rem; }
+  .menu-right { order: 2; padding-bottom: 1.5rem; }
+  .cardstack { width: min(62vw, 280px); }
+  .mbtn { font-size: 1.05rem; padding: .85rem 1.3rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu::before, .mascot, .cardstack, .menu-panel, .mcard .prompt.swap { animation: none !important; }
+  .mbtn { transition: none; }
+}

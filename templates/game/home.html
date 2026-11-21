@@ -1,23 +1,156 @@
 {% extends "base.html" %}
-{% block content %}
-<div class="card">
-  <h2>Crear sala</h2>
-  <form method="post">{% csrf_token %}
-    {% for deck in decks %}
-      <label><input type="checkbox" name="decks" value="{{ deck.id }}" checked> {{ deck.name }}</label><br>
-    {% empty %}
-      <p>No hay mazos disponibles. Cargá uno desde el admin o importá uno.</p>
-    {% endfor %}
-    <br><button name="create" value="1">Crear sala</button>
-  </form>
-  <p><a href="{% url 'decks:list' %}">Mis mazos (crear, importar, compartir)</a></p>
-</div>
+{% load static %}
+{% block title %}Cartas Arg{% endblock %}
+{% block wrapclass %}wide menu-page{% endblock %}
+{% block header %}{% endblock %}
 
-<div class="card">
-  <h2>Entrar con código</h2>
-  <form method="post">{% csrf_token %}
-    <input name="code" maxlength="6" placeholder="ABC12" required>
-    <button>Entrar</button>
-  </form>
-</div>
+{% block content %}
+<main class="menu">
+  <!-- Fondo decorativo -->
+  <div class="menu-bg" aria-hidden="true">
+    <div class="ghostcard" style="left: 3%;  top: 8%;  transform: rotate(-16deg)"></div>
+    <div class="ghostcard" style="left: 46%; top: 3%;  transform: rotate(10deg)"></div>
+    <div class="ghostcard" style="left: 90%; top: 12%; transform: rotate(18deg)"></div>
+    <div class="ghostcard" style="left: 6%;  top: 74%; transform: rotate(14deg)"></div>
+    <div class="ghostcard" style="left: 52%; top: 80%; transform: rotate(-12deg)"></div>
+    <div class="ghostcard" style="left: 92%; top: 70%; transform: rotate(-18deg)"></div>
+    <span class="sparkle" style="left: 41%; top: 18%">✦</span>
+    <span class="sparkle" style="left: 4%;  top: 52%; animation-delay: .5s">✦</span>
+    <span class="sparkle" style="left: 96%; top: 44%; animation-delay: 1s">✦</span>
+    <span class="sparkle" style="left: 47%; top: 90%; animation-delay: 1.4s">✦</span>
+  </div>
+
+  <section class="menu-left">
+    <div class="brand">
+      <img class="mascot" src="{% static 'img/mascot.svg' %}" alt="">
+      <h1 class="brand-title">
+        Cartas
+        <span class="script">Arg.</span>
+      </h1>
+    </div>
+
+    <nav class="menu-buttons" aria-label="Menú principal">
+      <button type="button" class="mbtn" data-panel="create" aria-expanded="false" aria-controls="panel-create">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><circle cx="5.2" cy="9.6" r="2.4"/><circle cx="18.8" cy="9.6" r="2.4"/><path d="M12 12.6c-3.4 0-6.2 1.8-6.2 4.1V19h12.4v-2.3c0-2.3-2.8-4.1-6.2-4.1zM5.2 13.2c-2.3 0-4.2 1.3-4.2 3v2.3h3.6v-1.8c0-1.4.7-2.6 1.9-3.3-.4-.1-.8-.2-1.3-.2zm13.6 0c-.5 0-.9.1-1.3.2 1.2.7 1.9 1.9 1.9 3.3v1.8H23v-2.3c0-1.7-1.9-3-4.2-3z"/></svg>
+        <span>Crear Sala</span>
+      </button>
+
+      <button type="button" class="mbtn" data-panel="join" aria-expanded="false" aria-controls="panel-join">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6.2"/><path d="M15 15l6 6"/></svg>
+        <span>Buscar Sala</span>
+      </button>
+
+      <a class="mbtn" href="{% url 'decks:list' %}">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        <span>Administrar Mazo</span>
+      </a>
+    </nav>
+
+    <!-- Crear sala: se elige con qué mazos arrancar (después se pueden cambiar en el lobby) -->
+    <div class="menu-panel" id="panel-create" hidden>
+      <form method="post">{% csrf_token %}
+        <h3>Crear sala</h3>
+        <p class="muted">Elegí con qué mazos arrancar. Después los podés cambiar en el lobby.</p>
+        <div class="menu-decks">
+          {% for deck in decks %}
+            <label><input type="checkbox" name="decks" value="{{ deck.id }}" checked> {{ deck.name }}</label>
+          {% empty %}
+            <p class="muted">Todavía no hay mazos disponibles. Podés crearlos en «Administrar Mazo» o cargar uno por código desde el lobby.</p>
+          {% endfor %}
+        </div>
+        <button class="bigbtn" name="create" value="1">Crear sala</button>
+      </form>
+    </div>
+
+    <!-- Buscar sala: se entra con el código que pasó el host -->
+    <div class="menu-panel" id="panel-join" hidden>
+      <form method="post">{% csrf_token %}
+        <h3>Buscar sala</h3>
+        <p class="muted">Escribí el código que te pasó quien creó la sala.</p>
+        <input name="code" maxlength="6" placeholder="ABC12" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+        <button class="bigbtn">Entrar</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Carta de adorno: cambia de frase cada tanto -->
+  <section class="menu-right" aria-hidden="true">
+    <div class="cardstack">
+      <div class="mcard back"></div>
+      <div class="mcard front">
+        <p id="prompt" class="prompt">En Argentina, la solución a todos los problemas es…</p>
+        <span class="mbrand">Cartas Arg</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  (function () {
+    const $ = (id) => document.getElementById(id);
+    const buttons = [...document.querySelectorAll(".mbtn")];
+    const panels = { create: $("panel-create"), join: $("panel-join") };
+    let cur = 1;  // arranca resaltado el del medio, como en el diseño
+
+    // Resaltado del botón activo (mouse, teclado y foco)
+    function select(i, focus) {
+      cur = (i + buttons.length) % buttons.length;
+      buttons.forEach((b, j) => b.classList.toggle("sel", j === cur));
+      if (focus) buttons[cur].focus();
+    }
+    buttons.forEach((b, i) => {
+      b.addEventListener("mouseenter", () => select(i));
+      b.addEventListener("focus", () => select(i));
+    });
+    select(cur);
+
+    // Paneles de Crear / Buscar: se abren y cierran con su botón
+    function closePanels() {
+      for (const el of Object.values(panels)) el.hidden = true;
+      buttons.forEach((b) => b.hasAttribute("aria-expanded") && b.setAttribute("aria-expanded", "false"));
+    }
+    function togglePanel(name, btn) {
+      const wasOpen = !panels[name].hidden;
+      closePanels();
+      if (wasOpen) return;
+      panels[name].hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+      const first = panels[name].querySelector("input[name=code], button[name=create]");
+      if (first) first.focus();
+    }
+    buttons.forEach((b) => {
+      if (b.dataset.panel) b.addEventListener("click", () => togglePanel(b.dataset.panel, b));
+    });
+
+    // Teclado: flechas para moverse entre botones, Escape para cerrar el panel
+    document.addEventListener("keydown", (e) => {
+      const typing = e.target.matches && e.target.matches("input, textarea, select");
+      if (e.key === "Escape") { closePanels(); return; }
+      if (typing) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); select(cur + 1, true); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); select(cur - 1, true); }
+    });
+
+    // La carta negra de adorno va cambiando de frase
+    const PROMPTS = [
+      "En Argentina, la solución a todos los problemas es…",
+      "Lo único que une a todos los argentinos es…",
+      "Mi vieja me dijo que no vuelva a casa sin…",
+      "El secreto del asado perfecto es…",
+      "Nadie me avisó que en la fiesta iba a haber…",
+      "Para llegar a fin de mes necesitás…",
+    ];
+    const prompt = $("prompt");
+    let pi = 0;
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setInterval(() => {
+        pi = (pi + 1) % PROMPTS.length;
+        prompt.textContent = PROMPTS[pi];
+        prompt.classList.remove("swap");
+        void prompt.offsetWidth;  // reinicia la animación
+        prompt.classList.add("swap");
+      }, 6000);
+    }
+  })();
+</script>
 {% endblock %}
