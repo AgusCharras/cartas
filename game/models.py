@@ -11,6 +11,7 @@ CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 REROLLS_PER_GAME = 2   # cambios de carta por jugador y por partida
 GOLDEN_PER_GAME = 1    # cartas doradas (escritas por el jugador) por jugador y por partida
+STEALS_PER_GAME = 0    # robos de carta por jugador y por partida (0 = desactivado)
 
 
 def generate_code():
@@ -33,6 +34,7 @@ class Game(models.Model):
     rerolls_per_player = models.PositiveSmallIntegerField(default=REROLLS_PER_GAME)
     golden_per_player = models.PositiveSmallIntegerField(default=GOLDEN_PER_GAME)
     golden_double = models.BooleanField(default=False)  # la carta dorada ganadora vale 2 puntos
+    steals_per_player = models.PositiveSmallIntegerField(default=STEALS_PER_GAME)
     # Votación sin juez: 0 = siempre hay juez, 100 = todas las rondas se votan,
     # en el medio = % de rondas (al azar) en las que votan todos
     vote_chance = models.PositiveSmallIntegerField(default=0)
@@ -59,6 +61,11 @@ class Player(models.Model):
     last_seen = models.DateTimeField(default=timezone.now)
     rerolls_left = models.PositiveSmallIntegerField(default=REROLLS_PER_GAME)
     golden_left = models.PositiveSmallIntegerField(default=GOLDEN_PER_GAME)
+    steals_left = models.PositiveSmallIntegerField(default=STEALS_PER_GAME)
+    # Mientras alguien le está robando, no puede jugar ni cambiar cartas (el bloqueo vence solo)
+    locked_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    locked_at = models.DateTimeField(null=True, blank=True)
+    robbed_round = models.PositiveSmallIntegerField(default=0)  # ronda en la que le robaron (solo 1 robo por ronda)
 
     class Meta:
         constraints = [

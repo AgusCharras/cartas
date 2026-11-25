@@ -98,6 +98,27 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             elif action == "claim_host":
                 await self.run(services.claim_host)
 
+            elif action == "steal_start":
+                target = content.get("player")
+                if type(target) is not int:
+                    raise GameError("Robo inválido.")
+                info = await self.run(services.steal_start, target)
+                await self.channel_layer.group_send(self.group, {
+                    "type": "notice.message", "text": f"🦹 {info['thief']} le está robando a {info['victim']}…"})
+
+            elif action == "steal_cancel":
+                await self.run(services.steal_cancel)
+
+            elif action == "steal":
+                target, slot = content.get("player"), content.get("slot")
+                if type(target) is not int or type(slot) is not int:
+                    raise GameError("Robo inválido.")
+                info = await self.run(services.steal_card, target, slot)
+                # Aviso para toda la sala: se sabe quién robó y a quién, nunca qué carta
+                await self.channel_layer.group_send(self.group, {
+                    "type": "notice.message",
+                    "text": f"🦹 {info['thief']} le robó una carta a {info['victim']}"})
+
             elif action == "vote":
                 token = content.get("submission")
                 if type(token) is not int:
@@ -112,7 +133,7 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                 if not isinstance(values, dict):
                     raise GameError("Ajustes inválidos.")
                 clean = {}
-                for key in ("points_to_win", "rerolls", "golden", "golden_double", "vote_chance"):
+                for key in ("points_to_win", "rerolls", "golden", "golden_double", "vote_chance", "steals"):
                     if key in values:
                         clean[key] = values[key]  # el tipo y el rango los valida el servicio
                 await self.run(services.update_settings, clean)
@@ -173,6 +194,9 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             return
         await self.channel_layer.group_send(
             self.group, {"type": "chat.message", "nick": nick, "text": text})
+
+    async def notice_message(self, event):
+        await self.send_json({"type": "notice", "text": event["text"]})
 
     async def chat_message(self, event):
         await self.send_json({"type": "chat", "nick": event["nick"], "text": event["text"]})

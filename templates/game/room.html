@@ -12,6 +12,8 @@
 
 <div id="toast" class="toast" hidden></div>
 <div id="reveal" class="reveal" role="dialog" aria-live="polite" hidden></div>
+<div id="robbed" class="reveal robbed" role="alert" hidden></div>
+<div id="steal" class="reveal stealmodal" role="dialog" hidden></div>
 <div id="podium" class="reveal podium" role="dialog" aria-live="polite" hidden></div>
 
 <div class="layout">
@@ -98,6 +100,7 @@
   // En la selección, la carta dorada se representa con "G" (las de la mano, con su id)
   function canPlay() {
     if (!state || !state.black) return false;
+    if (state.me.robbed_by) return false;  // le están robando: no puede jugar
     if (selected.length !== state.black.pick) return false;
     return !selected.includes("G") || goldenText.trim().length >= 3;
   }
@@ -397,6 +400,90 @@
     }
   }
 
+  // ---- robo de cartas: se elige una carta boca abajo del rival, sin ver su contenido ----
+  // Al tocar a la víctima se la bloquea (no puede jugar y ve un aviso) hasta que el ladrón elige,
+  // cancela o se le acaba el tiempo (el servidor es quien manda; esto es solo la parte visual).
+  const STEAL_SECONDS = 20;
+  let stealTarget = null, stealUntil = 0, stealTimer = null;
+  let lockUntil = 0, lockTimer = null;
+
+  function canSteal(s) {
+    return s.state === "playing" && (s.steals_per_player ?? 0) > 0 && (s.me.steals_left ?? 0) > 0
+      && !s.me.has_played && !s.me.robbed_by && (!s.me.is_judge || s.vote_round);
+  }
+
+  function canStealFrom(s, p) {
+    return canSteal(s) && p.id !== s.me.id && !p.robbed && !p.has_played && !p.being_robbed
+      && (s.hand_counts?.[p.id] ?? p.hand_count ?? 0) > 0 && (!p.is_judge || s.vote_round);
+  }
+
+  function startSteal(p) {
+    stealTarget = p.id;
+    stealUntil = Date.now() + STEAL_SECONDS * 1000;
+    clearTimeout(stealTimer);
+    stealTimer = setTimeout(() => {
+      if (stealTarget !== null) { showToast("Se acabó el tiempo para robar."); closeSteal(true); }
+    }, STEAL_SECONDS * 1000);
+    send({ action: "steal_start", player: p.id });
+    renderSteal(state, true);
+  }
+
+  // cancel = avisar al servidor para desbloquear a la víctima
+  function closeSteal(cancel) {
+    if (cancel && stealTarget !== null) send({ action: "steal_cancel" });
+    stealTarget = null;
+    clearTimeout(stealTimer);
+    $("steal").hidden = true;
+  }
+
+  function renderSteal(s, justOpened) {
+    const box = $("steal");
+    const p = stealTarget === null ? null : s.players.find((x) => x.id === stealTarget);
+    const ok = p && canSteal(s) && !p.has_played && (p.robbing_me || justOpened)
+      && (s.hand_counts?.[p.id] ?? p.hand_count ?? 0) > 0;
+    if (!ok) { if (stealTarget !== null) closeSteal(false); return; }
+    const n = s.hand_counts?.[p.id] ?? p.hand_count ?? 0;
+    box.hidden = false;
+    box.replaceChildren();
+    const card = node("div", undefined, "stealbox");
+    card.append(node("h3", `🦹 Robarle una carta a ${p.nickname}`));
+    card.append(node("p", `Elegí una carta boca abajo, no podés ver qué dice. Tenés ${STEAL_SECONDS} segundos. `
+      + `Te quedan ${s.me.steals_left} robo${s.me.steals_left === 1 ? "" : "s"}.`, "hint"));
+    const row = node("div", undefined, "stealcards");
+    for (let i = 0; i < n; i++) {
+      const c = cardNode("", "back stealcard");
+      c.classList.add("clickable");
+      c.onclick = () => { send({ action: "steal", player: p.id, slot: i }); closeSteal(false); };
+      row.append(c);
+    }
+    card.append(row);
+    const cancel = node("button", "Cancelar", "ghostbtn");
+    cancel.onclick = () => closeSteal(true);
+    card.append(cancel);
+    box.append(card);
+  }
+
+  // Pantalla para quien está siendo robado: se muestra mientras el servidor lo tenga bloqueado
+  function renderRobbed(s) {
+    const box = $("robbed");
+    const by = s.me.robbed_by;
+    clearTimeout(lockTimer);
+    if (!by) { box.hidden = true; lockUntil = 0; return; }
+    lockUntil = Date.now() + (s.me.lock_left ?? 20) * 1000;
+    // Por si el ladrón se desconecta: el bloqueo vence solo en el servidor, acá se oculta a la par
+    lockTimer = setTimeout(() => { if (state) { state.me.robbed_by = null; renderRobbed(state); renderMain(state); } },
+                           Math.max(0, lockUntil - Date.now()) + 300);
+    if (box.dataset.by === by && !box.hidden) return;  // ya está visible: no se reinicia la animación
+    box.dataset.by = by;
+    box.replaceChildren();
+    const inner = node("div", undefined, "robbedbox");
+    inner.append(node("div", "🦹", "robbedicon"));
+    inner.append(node("h2", "¡Te están choreando!!"));
+    inner.append(node("p", `${by} te está robando una carta. No podés jugar hasta que termine.`));
+    box.append(inner);
+    box.hidden = false;
+  }
+
   function renderPlayers(s) {
     $("pcount").textContent = s.players.length;
     const ul = $("players");
@@ -432,6 +519,14 @@
       if (matchPoint) name.append(node("div", "⚡ MATCH POINT", "mp-tag"));
       li.append(name);
 
+      if (canStealFrom(s, p)) {
+        const st = node("button", "🦹", "stealbtn");
+        st.title = `Robarle una carta a ${p.nickname}`;
+        st.onclick = () => startSteal(p);
+        li.append(st);
+      } else if (s.state === "playing" && (p.robbed || p.being_robbed)) {
+        li.append(node("span", p.being_robbed ? "🦹" : "🚫", "robbedtag"));
+      }
       if (s.me.is_host && p.id !== s.me.id && s.state !== "finished") {
         const k = node("button", "✕", "kick");
         k.title = `Expulsar a ${p.nickname}`;
@@ -512,7 +607,7 @@
   }
 
   // ---- reglas de la partida (el host las cambia en el lobby; los demás las ven) ----
-  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95] };  // igual que en el servidor
+  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95], steals: [0, 5] };  // igual que en el servidor
 
   function setRule(values) {
     send({ action: "settings", values });
@@ -557,6 +652,7 @@
     }
     box.append(stepperRow(s, "🔄 Cambios de carta por jugador", "rerolls", s.rerolls_per_player, ""));
     box.append(stepperRow(s, "⭐ Cartas doradas por jugador", "golden", s.golden_per_player, ""));
+    box.append(stepperRow(s, "🦹 Robos de carta por jugador", "steals", s.steals_per_player ?? 0, ""));
 
     // La dorada vale doble: solo tiene sentido si hay doradas
     const dbl = node("label", undefined, "rule dbl" + (s.golden_per_player === 0 ? " off" : ""));
@@ -766,7 +862,7 @@
         };
 
         const rr = node("button", `🔄 Cambiar carta (${left})`, "ghostbtn");
-        rr.disabled = left <= 0 || selected.length !== 1 || selected[0] === "G";
+        rr.disabled = left <= 0 || selected.length !== 1 || selected[0] === "G" || !!s.me.robbed_by;
         rr.onclick = () => {
           if (confirm("Se descarta la carta elegida y recibís una nueva. ¿Seguro?")) {
             send({ action: "reroll", card: selected[0] });
@@ -867,6 +963,8 @@
     renderPlayers(s);
     renderControls(s);
     renderMain(s);
+    renderSteal(s);
+    renderRobbed(s);
   }
 
   function connect() {
@@ -882,7 +980,8 @@
       const msg = JSON.parse(e.data);
       if (msg.type === "state") render(msg);
       else if (msg.type === "chat") addChat(msg.nick, msg.text);
-      else if (msg.type === "error") showToast(msg.message);
+      else if (msg.type === "error") { showToast(msg.message); if (stealTarget !== null) closeSteal(false); }
+      else if (msg.type === "notice") showToast(msg.text);
     };
     ws.onclose = (e) => {
       clearInterval(pingTimer);

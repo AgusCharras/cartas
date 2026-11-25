@@ -21,6 +21,7 @@ POINTS_RANGE = (1, 20)    # puntos para ganar
 REROLLS_RANGE = (0, 10)   # cambios de carta por jugador
 GOLDEN_RANGE = (0, 5)     # cartas doradas por jugador (0 = no hay)
 VOTE_RANGE = (0, 100)     # % de rondas que se votan: 0 = siempre juez, 100 = siempre votación
+STEALS_RANGE = (0, 5)     # robos de carta por jugador (0 = no se puede robar)
 MIN_GOLDEN_LEN = 3      # largo de la carta dorada que escribe el jugador
 MAX_GOLDEN_LEN = 140
 GRACE = timedelta(seconds=20)   # cuánto debe llevar desconectado el host para poder tomarle el rol
@@ -133,7 +134,8 @@ def start_game(game_id, player_id):
         [GameCard(game=game, card=c, position=i) for i, c in enumerate(cards)]
     )
     # Los ajustes se eligen en el lobby: recién ahora se reparten a cada jugador
-    game.players.update(rerolls_left=game.rerolls_per_player, golden_left=game.golden_per_player)
+    game.players.update(rerolls_left=game.rerolls_per_player, golden_left=game.golden_per_player,
+                        steals_left=game.steals_per_player)
     for p in players:
         _deal(game, p, HAND_SIZE)
 
@@ -153,6 +155,7 @@ def _start_round(game):
     black.save(update_fields=["status"])
     game.round_number += 1
     game.state = Game.PLAYING
+    game.players.update(locked_by=None, locked_at=None)
     # Ronda de votación: no hay juez, todos juegan y todos votan
     game.vote_round = random.randrange(100) < game.vote_chance
 
@@ -168,6 +171,9 @@ def play_cards(game_id, player_id, card_ids, golden=None):
         raise GameError("Sos el juez de esta ronda: te toca esperar.")
     if game.cards.filter(status=GameCard.PLAYED, player_id=player_id).exists():
         raise GameError("Ya jugaste en esta ronda.")
+    me = game.players.filter(pk=player_id).first()
+    if me is not None and _lock_active(me):
+        raise GameError("Te están robando una carta: esperá un momento.")
 
     pick = _pick_of(_current_black(game).card)
     if len(card_ids) + (1 if golden else 0) != pick or len(set(card_ids)) != len(card_ids):
@@ -226,6 +232,8 @@ def reroll_card(game_id, player_id, card_id):
         raise GameError("El juez no necesita cambiar cartas.")
     if game.cards.filter(status=GameCard.PLAYED, player=player).exists():
         raise GameError("Ya jugaste en esta ronda.")
+    if _lock_active(player):
+        raise GameError("Te están robando una carta: esperá un momento.")
     if player.rerolls_left <= 0:
         raise GameError("No te quedan cambios." if game.rerolls_per_player
                         else "En esta partida no hay cambios de carta.")
@@ -537,6 +545,113 @@ def _after_leave_in_vote(game, n_players):
             _resolve_vote(game)
 
 
+# ---------- robar cartas (a ciegas) ----------
+
+def _steal_order(game, thief, target):
+    """La mano de `target` en un orden opaco: el ladrón elige una posición sin saber qué carta es.
+
+    El orden sale de un HMAC con la clave secreta del servidor, la ronda y la pareja ladrón/víctima:
+    es estable mientras la víctima tenga las mismas cartas (si el ladrón reabre el panel ve lo mismo)
+    pero no se puede adivinar desde el navegador."""
+    cards = list(game.cards.filter(status=GameCard.HAND, player=target).select_related("card"))
+
+    def key(gc):
+        msg = f"steal:{game.id}:{game.round_number}:{thief.id}:{target.id}:{gc.id}".encode()
+        return hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
+
+    cards.sort(key=key)
+    return cards
+
+
+STEAL_LOCK_SECONDS = 20  # tiempo máximo que el ladrón puede tener bloqueada a la víctima
+
+
+def _lock_active(player, now=None):
+    now = now or timezone.now()
+    return bool(player.locked_by_id and player.locked_at
+                and (now - player.locked_at).total_seconds() < STEAL_LOCK_SECONDS)
+
+
+def _check_steal(game, player_id, target_id):
+    """Validaciones comunes de empezar un robo y de completarlo. Devuelve (ladrón, víctima)."""
+    if game.state != Game.PLAYING:
+        raise GameError("Solo se puede robar mientras se elige la carta de la ronda.")
+    thief = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
+    if thief is None:
+        raise GameError("Ya no estás en esta sala.")
+    if thief.steals_left <= 0:
+        raise GameError("No te quedan robos." if game.steals_per_player
+                        else "En esta partida no se pueden robar cartas.")
+    if not game.vote_round and thief.id == game.judge_id:
+        raise GameError("Sos el juez de esta ronda: no jugás, así que no podés robar.")
+    if game.cards.filter(status=GameCard.PLAYED, player=thief).exists():
+        raise GameError("Ya jugaste en esta ronda.")
+    if target_id == thief.id:
+        raise GameError("No podés robarte a vos mismo.")
+    target = game.players.filter(pk=target_id).first()
+    if target is None:
+        raise GameError("Ese jugador ya no está en la sala.")
+    if game.cards.filter(status=GameCard.PLAYED, player=target).exists():
+        raise GameError(f"{target.nickname} ya jugó: no se le puede robar.")
+    if target.robbed_round == game.round_number:
+        # Un solo robo por víctima y por ronda: si no, varios ladrones la dejarían sin cartas para jugar
+        raise GameError(f"A {target.nickname} ya le robaron una carta en esta ronda.")
+    return thief, target
+
+
+@transaction.atomic
+def steal_start(game_id, player_id, target_id):
+    """El ladrón toca a la víctima: desde acá la víctima no puede jugar (y ve el aviso) hasta que
+    el robo se completa, se cancela o vence el tiempo. Devuelve los datos para avisar a la sala."""
+    game = _lock(game_id)
+    thief, target = _check_steal(game, player_id, target_id)
+    now = timezone.now()
+    if target.locked_by_id not in (None, thief.id) and _lock_active(target, now):
+        raise GameError(f"A {target.nickname} ya la están robando.")
+    if not game.players.filter(pk=target.id).exists():
+        raise GameError("Ese jugador ya no está en la sala.")
+    if not game.cards.filter(status=GameCard.HAND, player=target).exists():
+        raise GameError(f"{target.nickname} no tiene cartas para robar.")
+    # Un ladrón bloquea a una sola víctima a la vez
+    game.players.filter(locked_by=thief).exclude(pk=target.id).update(locked_by=None, locked_at=None)
+    target.locked_by, target.locked_at = thief, now
+    target.save(update_fields=["locked_by", "locked_at"])
+    return {"thief": thief.nickname, "victim": target.nickname}
+
+
+@transaction.atomic
+def steal_cancel(game_id, player_id):
+    game = _lock(game_id)
+    game.players.filter(locked_by_id=player_id).update(locked_by=None, locked_at=None)
+
+
+@transaction.atomic
+def steal_card(game_id, player_id, target_id, slot):
+    """Completa el robo: toma la carta que está en la posición `slot` (boca abajo) de la víctima.
+    Hay que haber empezado el robo antes (steal_start) y que el bloqueo siga vigente."""
+    game = _lock(game_id)
+    thief, target = _check_steal(game, player_id, target_id)
+    if target.locked_by_id != thief.id or not _lock_active(target):
+        raise GameError("Se te acabó el tiempo para robar: volvé a intentarlo.")
+
+    hand = _steal_order(game, thief, target)
+    if not hand:
+        raise GameError(f"{target.nickname} no tiene cartas para robar.")
+    if type(slot) is not int or not 0 <= slot < len(hand):
+        raise GameError("Carta inválida.")
+
+    stolen = hand[slot]
+    stolen.player = thief
+    stolen.save(update_fields=["player"])
+    thief.steals_left -= 1
+    thief.save(update_fields=["steals_left"])
+    target.robbed_round = game.round_number
+    target.locked_by, target.locked_at = None, None
+    target.save(update_fields=["robbed_round", "locked_by", "locked_at"])
+    return {"thief_id": thief.id, "thief": thief.nickname, "victim_id": target.id, "victim": target.nickname,
+            "card_id": stolen.id, "card_text": stolen.text}
+
+
 # ---------- ajustes de la partida (solo en el lobby) ----------
 
 @transaction.atomic
@@ -559,6 +674,8 @@ def update_settings(game_id, player_id, values):
         game.rerolls_per_player = in_range("Cambios de carta", values["rerolls"], REROLLS_RANGE)
     if "golden" in values:
         game.golden_per_player = in_range("Cartas doradas", values["golden"], GOLDEN_RANGE)
+    if "steals" in values:
+        game.steals_per_player = in_range("Robos de carta", values["steals"], STEALS_RANGE)
     if "vote_chance" in values:
         game.vote_chance = in_range("Probabilidad de votación", values["vote_chance"], VOTE_RANGE)
     if "golden_double" in values:
@@ -644,6 +761,12 @@ def snapshot(game_id, player_id):
                 for gc in game.cards.filter(status=GameCard.HAND, player_id=player_id)
                 .select_related("card").order_by("id")]
 
+    # Cuántas cartas tiene cada uno en la mano (se muestran boca abajo al robar; nunca cuáles son)
+    hand_counts = {}
+    if in_round:
+        for pid in game.cards.filter(status=GameCard.HAND).values_list("player_id", flat=True):
+            hand_counts[pid] = hand_counts.get(pid, 0) + 1
+
     # En una ronda de votación no hay juez
     judge_id = None if game.vote_round else game.judge_id
 
@@ -687,6 +810,7 @@ def snapshot(game_id, player_id):
         "rerolls_per_player": game.rerolls_per_player,
         "golden_per_player": game.golden_per_player,
         "golden_double": game.golden_double,
+        "steals_per_player": game.steals_per_player,
         "vote_chance": game.vote_chance,
         "vote_round": game.vote_round,
         "votes_cast": len(voted_ids),
@@ -702,12 +826,22 @@ def snapshot(game_id, player_id):
             "vote": my_vote,
             "rerolls_left": me.rerolls_left,
             "golden_left": me.golden_left,
+            "steals_left": me.steals_left,
+            # Si alguien me está robando ahora: quién y cuántos segundos queda bloqueado
+            "robbed_by": (next((p.nickname for p in players if p.id == me.locked_by_id), None)
+                          if game.state == Game.PLAYING and _lock_active(me, now) else None),
+            "lock_left": (max(0, round(STEAL_LOCK_SECONDS - (now - me.locked_at).total_seconds()))
+                          if game.state == Game.PLAYING and _lock_active(me, now) else 0),
             "hand": hand,
         },
         "players": [
             {"id": p.id, "nickname": p.nickname, "is_host": p.is_host, "score": p.score,
              "is_judge": p.id == judge_id, "has_played": p.id in played_ids,
              "has_voted": p.id in voted_ids,
+             "hand_count": hand_counts.get(p.id, 0),
+             "robbed": game.round_number > 0 and p.robbed_round == game.round_number,
+             "being_robbed": game.state == Game.PLAYING and _lock_active(p, now),
+             "robbing_me": game.state == Game.PLAYING and _lock_active(p, now) and p.locked_by_id == me.id,
              "online": is_online(p, now)}
             for p in players
         ],
