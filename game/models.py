@@ -33,6 +33,10 @@ class Game(models.Model):
     rerolls_per_player = models.PositiveSmallIntegerField(default=REROLLS_PER_GAME)
     golden_per_player = models.PositiveSmallIntegerField(default=GOLDEN_PER_GAME)
     golden_double = models.BooleanField(default=False)  # la carta dorada ganadora vale 2 puntos
+    # Votación sin juez: 0 = siempre hay juez, 100 = todas las rondas se votan,
+    # en el medio = % de rondas (al azar) en las que votan todos
+    vote_chance = models.PositiveSmallIntegerField(default=0)
+    vote_round = models.BooleanField(default=False)  # la ronda actual se decide votando (no hay juez)
     created_at = models.DateTimeField(auto_now_add=True)
     judge = models.ForeignKey("Player", null=True, blank=True,
                               on_delete=models.SET_NULL, related_name="+")
@@ -91,3 +95,16 @@ class GameCard(models.Model):
     @property
     def is_golden(self):
         return self.card_id is None
+
+
+class Vote(models.Model):
+    """Voto de una ronda de votación: quién votó (voter) y a qué jugador pertenece la jugada elegida (target).
+    Se borran cuando la ronda termina o se cancela."""
+    game = models.ForeignKey(Game, related_name="votes", on_delete=models.CASCADE)
+    voter = models.ForeignKey(Player, related_name="votes_cast", on_delete=models.CASCADE)
+    target = models.ForeignKey(Player, related_name="votes_received", on_delete=models.CASCADE)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["game", "voter"], name="one_vote_per_player")
+        ]

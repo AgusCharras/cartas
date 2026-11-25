@@ -527,3 +527,37 @@ button.danger { background: transparent; color: var(--danger); border: 1px solid
   .menu::before, .mascot, .cardstack, .menu-panel, .mcard .prompt.swap { animation: none !important; }
   .mbtn { transition: none; }
 }
+
+/* ============ Votación (rondas sin juez) ============ */
+.votebanner { text-align: center; font-weight: 800; padding: .7rem 1rem; border-radius: 14px;
+              color: #d7f5e3; background: linear-gradient(90deg, rgba(111, 211, 154, .18), rgba(111, 211, 154, .06));
+              border: 1px solid var(--accent); }
+.votebanner.pop { animation: voteintro .7s cubic-bezier(.2, 1.4, .4, 1) both; }
+@keyframes voteintro {
+  0%   { opacity: 0; transform: translateY(-14px) scale(.9); box-shadow: 0 0 0 0 rgba(111, 211, 154, .7); }
+  60%  { opacity: 1; transform: scale(1.03); box-shadow: 0 0 0 14px rgba(111, 211, 154, 0); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* Jugadas de la mesa durante la votación */
+.sub { position: relative; margin-top: .7rem; }
+.sub.mine { opacity: .6; border-style: dashed; border-color: var(--border); }
+.sub.voted { border-color: var(--accent); background: rgba(111, 211, 154, .08); }
+.subtag { position: absolute; left: 50%; top: -.7rem; transform: translateX(-50%); z-index: 2;
+          padding: .05rem .6rem; border-radius: 999px; font-size: .72rem; font-weight: 800; white-space: nowrap;
+          background: #101013; border: 1px solid var(--border); color: var(--muted); }
+.sub.voted .subtag { color: var(--accent); border-color: var(--accent); }
+
+/* Revelación: cuántos votos tuvo la ganadora */
+.badge-votes { margin-top: .2rem; font-size: .85rem; font-weight: 800; color: var(--accent); }
+
+/* Reglas: modo de juego */
+.rules-sub { margin: 1rem 0 .4rem; font-size: .95rem; color: var(--muted); }
+.modes { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .4rem; }
+.chip.mode { padding: .4rem .9rem; font-size: .9rem; color: var(--text); }
+.chip.mode.on { color: var(--accent-ink); }
+div.chip.mode { cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  .votebanner.pop { animation: none !important; }
+}

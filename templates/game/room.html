@@ -45,6 +45,7 @@
   const deckOptions = JSON.parse($("deck-options").textContent);
 
   let ws = null, state = null, selected = [], selectedSub = null, toastTimer = null, pingTimer = null;
+  let voteBannerRound = null;  // ronda en la que ya se animó el aviso de votación
   let codeDraft = "", selectDraft = "";  // para no perder lo escrito cuando llega un refresco
 
   $("copy").onclick = async () => {
@@ -266,8 +267,11 @@
     const badge = node("div", undefined, "badge");
     badge.append(avatarNode(l.winner));
     const txt = node("div");
-    txt.append(node("div", "La carta fue elegida por:", "badge-label"));
+    txt.append(node("div", l.mode === "vote" ? "La jugada más votada fue de:" : "La carta fue elegida por:", "badge-label"));
     txt.append(node("div", isMe ? l.winner + " (vos) 🎉" : l.winner, "badge-name"));
+    if (l.mode === "vote") {
+      txt.append(node("div", "🗳️ " + l.votes + (l.votes === 1 ? " voto" : " votos") + (l.tie ? " · desempate por sorteo 🎲" : ""), "badge-votes"));
+    }
     if (l.points > 1) txt.append(node("div", "⭐ ¡Carta dorada: vale " + l.points + " puntos!", "badge-bonus"));
     badge.append(txt);
     const count = node("div", undefined, "countpill");
@@ -380,7 +384,8 @@
     if (!s.last_result || s.state === "lobby") { r.hidden = true; return; }
     const l = s.last_result;
     r.hidden = false;
-    r.textContent = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`;
+    r.textContent = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`
+      + (l.mode === "vote" ? ` · 🗳️ ${l.votes} voto${l.votes === 1 ? "" : "s"}${l.tie ? " (desempate por sorteo)" : ""}` : "");
     if (l.round !== shownRound) {
       shownRound = l.round;
       if (!first) {  // al entrar o recargar no se anima
@@ -422,6 +427,7 @@
       if (p.is_host) name.append(node("span", " 👑"));
       if (p.is_judge && s.state !== "lobby") name.append(node("span", " ⚖️"));
       if (s.state === "playing" && !p.is_judge) name.append(node("span", p.has_played ? " ✅" : " ⏳"));
+      if (s.state === "judging" && s.vote_round) name.append(node("span", p.has_voted ? " ✅" : " ⏳"));
       if (!p.online) name.append(node("span", " 🔌"));
       if (matchPoint) name.append(node("div", "⚡ MATCH POINT", "mp-tag"));
       li.append(name);
@@ -480,9 +486,18 @@
       box.append(b);
     }
     if (s.me.is_host && (s.state === "playing" || s.state === "judging")) {
-      const b = node("button", "Saltear al juez");
+      const b = node("button", s.vote_round ? "Cancelar ronda" : "Saltear al juez");
       b.onclick = () => {
-        if (confirm("Se cancela la ronda y pasa a otro juez. ¿Seguro?")) send({ action: "skip_judge" });
+        const msg = s.vote_round ? "Se cancela la ronda y se vuelve a empezar con otra carta negra. ¿Seguro?"
+                                 : "Se cancela la ronda y pasa a otro juez. ¿Seguro?";
+        if (confirm(msg)) send({ action: "skip_judge" });
+      };
+      box.append(b);
+    }
+    if (s.me.is_host && s.state === "judging" && s.vote_round && s.votes_cast > 0) {
+      const b = node("button", "Cerrar votación");
+      b.onclick = () => {
+        if (confirm("Se cuentan los votos que hay y gana la jugada más votada. ¿Cerrar la votación?")) send({ action: "close_vote" });
       };
       box.append(b);
     }
@@ -497,29 +512,29 @@
   }
 
   // ---- reglas de la partida (el host las cambia en el lobby; los demás las ven) ----
-  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5] };  // igual que en el servidor
+  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95] };  // igual que en el servidor
 
   function setRule(values) {
     send({ action: "settings", values });
   }
 
   // Fila "nombre  [−] valor [+]" (solo lectura si no sos el host)
-  function stepperRow(s, label, key, value, unit) {
+  function stepperRow(s, label, key, value, unit, step = 1) {
     const row = node("div", undefined, "rule");
     row.append(node("div", label, "rule-label"));
     const ctl = node("div", undefined, "stepper");
     const [min, max] = RANGES[key];
     if (s.me.is_host) {
       const minus = node("button", "−", "step");
-      minus.disabled = value <= min;
-      minus.onclick = () => setRule({ [key]: value - 1 });
+      minus.disabled = value - step < min;
+      minus.onclick = () => setRule({ [key]: value - step });
       ctl.append(minus);
     }
     ctl.append(node("div", value + (unit ? " " + unit : ""), "rule-value"));
     if (s.me.is_host) {
       const plus = node("button", "+", "step");
-      plus.disabled = value >= max;
-      plus.onclick = () => setRule({ [key]: value + 1 });
+      plus.disabled = value + step > max;
+      plus.onclick = () => setRule({ [key]: value + step });
       ctl.append(plus);
     }
     row.append(ctl);
@@ -552,6 +567,34 @@
     chk.onchange = () => setRule({ golden_double: chk.checked });
     dbl.append(chk, node("span", " Ganar con una carta dorada vale 2 puntos"));
     box.append(dbl);
+
+    // Cómo se elige la ganadora: con juez, rondas sorpresa de votación al azar, o siempre votación
+    const mode = s.vote_chance === 0 ? "classic" : s.vote_chance === 100 ? "always" : "random";
+    box.append(node("h4", "Cómo se elige la ganadora", "rules-sub"));
+    const defs = [
+      ["classic", "👨‍⚖️ Con juez", 0],
+      ["random", "🎲 Sorpresa", mode === "random" ? s.vote_chance : 25],
+      ["always", "🗳️ Siempre votación", 100],
+    ];
+    const modes = node("div", undefined, "modes");
+    for (const [id, label, value] of defs) {
+      if (s.me.is_host) {
+        const b = node("button", label, "chip mode" + (mode === id ? " on" : ""));
+        b.onclick = () => setRule({ vote_chance: value });
+        modes.append(b);
+      } else if (mode === id) {
+        modes.append(node("div", label, "chip mode on"));
+      }
+    }
+    box.append(modes);
+    if (mode === "random") {
+      box.append(stepperRow(s, "🎲 Probabilidad de ronda de votación", "vote_chance", s.vote_chance, "%", 5));
+    }
+    box.append(node("p", {
+      classic: "En cada ronda un jugador hace de juez y elige la mejor respuesta.",
+      random: "En algunas rondas, al azar, no hay juez: todos juegan y todos votan la mejor. Nadie puede votar su propia carta.",
+      always: "No hay juez: en todas las rondas todos juegan y todos votan. Nadie puede votar su propia carta; si hay empate, se sortea.",
+    }[mode], "muted"));
 
     box.append(node("p", s.golden_per_player > 0
       ? "La carta dorada la escribe cada jugador y se juega como una respuesta más."
@@ -663,6 +706,13 @@
     const board = node("div", undefined, "board");
     const pick = s.black.pick;
 
+    if (s.vote_round) {  // ronda sin juez: el aviso se anima solo la primera vez en cada ronda
+      const vb = node("div", "🗳️ Ronda de votación: todos juegan y todos votan. No podés votar tu propia carta.",
+                      "votebanner" + (voteBannerRound !== s.round ? " pop" : ""));
+      voteBannerRound = s.round;
+      board.append(vb);
+    }
+
     // Fila superior: carta negra + mesa
     const top = node("div", undefined, "toprow");
     top.append(cardNode(s.black.text, "black"));
@@ -674,12 +724,20 @@
         tableEl.append(p.has_played ? cardNode("", "back") : node("div", undefined, "slot"));
       }
     } else {
+      const voting = !!s.vote_round;
       for (const sub of s.submissions) {
+        const canPick = voting ? !sub.mine : s.me.is_judge;  // en votación, la propia jugada no se puede votar
         const group = node("div", undefined, "sub" + (selectedSub === sub.id ? " selected" : "")
-                                                    + (s.me.is_judge ? " clickable" : ""));
+                                                    + (canPick ? " clickable" : "") + (sub.mine ? " mine" : "")
+                                                    + (voting && s.me.vote === sub.id ? " voted" : ""));
         sub.cards.forEach((t) => group.append(cardNode(t, "white")));
-        if (s.me.is_judge) {
-          group.onclick = () => { selectedSub = selectedSub === sub.id ? null : sub.id; renderMain(state); };
+        if (sub.mine) group.append(node("div", "Tu jugada", "subtag"));
+        else if (voting && s.me.vote === sub.id) group.append(node("div", "✅ Tu voto", "subtag"));
+        if (canPick) {
+          group.onclick = () => {
+            selectedSub = voting ? sub.id : (selectedSub === sub.id ? null : sub.id);
+            renderMain(state);
+          };
         }
         tableEl.append(group);
       }
@@ -717,6 +775,15 @@
         if (s.rerolls_per_player > 0) actions.append(play, rr);
         else actions.append(play);
       }
+    } else if (s.vote_round) {
+      const mine = s.me.vote;
+      const vote = node("button", mine ? "🗳️ Cambiar voto" : "🗳️ Votar", "bigbtn");
+      vote.disabled = selectedSub === null || selectedSub === mine;
+      vote.onclick = () => send({ action: "vote", submission: selectedSub });
+      actions.append(vote);
+      actions.append(node("p", `Votaron ${s.votes_cast} de ${s.voters_total}` + (mine
+        ? " · ya votaste, podés cambiar tu voto hasta que voten todos"
+        : " · tocá la respuesta que más te guste (no la tuya)"), "hint"));
     } else if (s.me.is_judge) {
       const win = node("button", "🏆 Elegir ganadora", "bigbtn");
       win.disabled = selectedSub === null;
@@ -782,9 +849,11 @@
     selected = selected.filter((id) => ids.has(id) || (id === "G" && goldenOk));
     if ((s.me.golden_left ?? 0) <= 0) goldenText = "";  // ya la usó: se descarta el borrador
     if (s.state !== "judging" || !s.submissions.some((x) => x.id === selectedSub)) selectedSub = null;
+    if (s.state === "judging" && s.vote_round && selectedSub === null && s.me.vote) selectedSub = s.me.vote;
 
     $("round-pill").textContent =
-      s.state === "lobby" ? "Lobby" : s.state === "finished" ? "Partida terminada" : `Ronda ${s.round}`;
+      s.state === "lobby" ? "Lobby" : s.state === "finished" ? "Partida terminada"
+        : `Ronda ${s.round}` + (s.vote_round ? " · 🗳️ Votación" : "");
     $("goal-pill").hidden = s.state === "lobby";
     $("goal-pill").textContent = `A ${s.points_to_win} puntos`
       + (s.golden_double && s.golden_per_player > 0 ? " · ⭐ vale 2" : "");

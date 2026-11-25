@@ -11,7 +11,7 @@ from django.db.models.functions import Greatest
 from django.utils import timezone
 
 from decks.models import Card, Deck
-from .models import Game, GameCard, Player
+from .models import Game, GameCard, Player, Vote
 
 HAND_SIZE = 7
 MIN_PLAYERS = 3        # para empezar la partida
@@ -20,6 +20,7 @@ MAX_DECKS_PER_GAME = 8
 POINTS_RANGE = (1, 20)    # puntos para ganar
 REROLLS_RANGE = (0, 10)   # cambios de carta por jugador
 GOLDEN_RANGE = (0, 5)     # cartas doradas por jugador (0 = no hay)
+VOTE_RANGE = (0, 100)     # % de rondas que se votan: 0 = siempre juez, 100 = siempre votación
 MIN_GOLDEN_LEN = 3      # largo de la carta dorada que escribe el jugador
 MAX_GOLDEN_LEN = 140
 GRACE = timedelta(seconds=20)   # cuánto debe llevar desconectado el host para poder tomarle el rol
@@ -60,6 +61,16 @@ def _sub_token(game, first_card_id):
     msg = f"{game.id}:{game.round_number}:{first_card_id}".encode()
     digest = hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
     return int(digest[:12], 16)
+
+
+def _submissions(game):
+    """Jugadas de la ronda: [(token, autor, [cartas])], en el orden aleatorio (estable) de la mesa."""
+    by_player = {}
+    for gc in game.cards.filter(status=GameCard.PLAYED).select_related("card", "player").order_by("slot"):
+        by_player.setdefault(gc.player_id, []).append(gc)
+    subs = [(_sub_token(game, cards[0].id), cards[0].player, cards) for cards in by_player.values()]
+    subs.sort(key=lambda sub: sub[0])
+    return subs
 
 
 # ---------- mazos ----------
@@ -142,6 +153,8 @@ def _start_round(game):
     black.save(update_fields=["status"])
     game.round_number += 1
     game.state = Game.PLAYING
+    # Ronda de votación: no hay juez, todos juegan y todos votan
+    game.vote_round = random.randrange(100) < game.vote_chance
 
 
 @transaction.atomic
@@ -151,7 +164,7 @@ def play_cards(game_id, player_id, card_ids, golden=None):
     game = _lock(game_id)
     if game.state != Game.PLAYING:
         raise GameError("Ahora no se pueden jugar cartas.")
-    if player_id == game.judge_id:
+    if not game.vote_round and player_id == game.judge_id:
         raise GameError("Sos el juez de esta ronda: te toca esperar.")
     if game.cards.filter(status=GameCard.PLAYED, player_id=player_id).exists():
         raise GameError("Ya jugaste en esta ronda.")
@@ -194,7 +207,8 @@ def play_cards(game_id, player_id, card_ids, golden=None):
         me.save(update_fields=["golden_left"])
 
     submitted = game.cards.filter(status=GameCard.PLAYED).values("player_id").distinct().count()
-    if submitted >= game.players.count() - 1:  # todos menos el juez
+    needed = game.players.count() - (0 if game.vote_round else 1)  # todos, o todos menos el juez
+    if submitted >= needed:
         game.state = Game.JUDGING
         game.save(update_fields=["state"])
 
@@ -208,7 +222,7 @@ def reroll_card(game_id, player_id, card_id):
     player = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
     if player is None:
         raise GameError("Ya no estás en esta sala.")
-    if player.id == game.judge_id:
+    if not game.vote_round and player.id == game.judge_id:
         raise GameError("El juez no necesita cambiar cartas.")
     if game.cards.filter(status=GameCard.PLAYED, player=player).exists():
         raise GameError("Ya jugaste en esta ronda.")
@@ -237,6 +251,8 @@ def pick_winner(game_id, player_id, submission_id):
     game = _lock(game_id)
     if game.state != Game.JUDGING:
         raise GameError("Todavía no es momento de elegir.")
+    if game.vote_round:
+        raise GameError("Esta ronda se decide votando entre todos.")
     if player_id != game.judge_id:
         raise GameError("Solo el juez elige la ganadora.")
 
@@ -248,7 +264,12 @@ def pick_winner(game_id, player_id, submission_id):
     if first is None:
         raise GameError("Jugada inválida.")
 
-    winner = first.player
+    _finish_round(game, first.player)
+
+
+def _finish_round(game, winner, extra=None):
+    """Suma el punto de la ronda, descarta lo jugado, repone las manos y arranca la siguiente.
+    `extra` se agrega al resultado que ven todos (por ejemplo, los votos)."""
     winner_cards = list(game.cards.filter(status=GameCard.PLAYED, player=winner)
                         .order_by("slot").select_related("card"))
     black = _current_black(game)
@@ -264,12 +285,14 @@ def pick_winner(game_id, player_id, submission_id):
         "black": black.card.text,
         "cards": [gc.text for gc in winner_cards],
         "golden": [gc.is_golden for gc in winner_cards],
+        **(extra or {}),
     }
 
     # Todo lo jugado en la ronda (y la negra) va al descarte
     game.cards.filter(status__in=[GameCard.PLAYED, GameCard.CURRENT]).update(
         status=GameCard.DISCARD, player=None, slot=None)
     game.cards.filter(card__isnull=True, status=GameCard.DISCARD).delete()  # las doradas no se reciclan
+    game.votes.all().delete()
 
     if winner.score >= game.points_to_win:
         game.state = Game.FINISHED
@@ -282,8 +305,9 @@ def pick_winner(game_id, player_id, submission_id):
         if missing > 0:
             _deal(game, p, missing)
 
-    idx = next(i for i, p in enumerate(players) if p.id == game.judge_id)
-    game.judge = players[(idx + 1) % len(players)]  # rota el juez
+    if not game.vote_round:  # el turno de juez solo avanza cuando hubo juez
+        idx = next((i for i, p in enumerate(players) if p.id == game.judge_id), -1)
+        game.judge = players[(idx + 1) % len(players)]
     _start_round(game)
     game.save()
 
@@ -335,6 +359,7 @@ def _restart_round(game, new_judge):
     """Cancela la ronda en curso y arranca otra con otra negra y otro juez.
     Las cartas ya jugadas vuelven a la mano de quien las jugó, y las doradas
     gastadas en esta ronda se devuelven (se borran y el jugador recupera su uso)."""
+    game.votes.all().delete()
     for gc in list(game.cards.filter(status=GameCard.PLAYED, card__isnull=True)):
         if gc.player_id:
             Player.objects.filter(pk=gc.player_id).update(golden_left=F("golden_left") + 1)
@@ -387,14 +412,19 @@ def remove_player(game_id, actor_id, target_id):
             game.state = Game.FINISHED
             if was_judge:
                 game.judge = next_judge
-        elif was_judge:
+        elif was_judge and not game.vote_round:
             _restart_round(game, next_judge)
-        elif game.state == Game.PLAYING:
-            # Quizás el que se fue era el único que faltaba jugar
-            submitted = (game.cards.filter(status=GameCard.PLAYED)
-                         .values("player_id").distinct().count())
-            if submitted >= len(remaining) - 1:
-                game.state = Game.JUDGING
+        else:
+            if was_judge:  # ronda de votación: no había juez, solo se corre el turno
+                game.judge = next_judge
+            if game.vote_round:
+                _after_leave_in_vote(game, len(remaining))
+            elif game.state == Game.PLAYING:
+                # Quizás el que se fue era el único que faltaba jugar
+                submitted = (game.cards.filter(status=GameCard.PLAYED)
+                             .values("player_id").distinct().count())
+                if submitted >= len(remaining) - 1:
+                    game.state = Game.JUDGING
     elif was_judge:
         game.judge = next_judge
     game.save()
@@ -406,9 +436,12 @@ def skip_judge(game_id, player_id):
     _require_host(game, player_id)
     if game.state not in (Game.PLAYING, Game.JUDGING):
         raise GameError("No hay una ronda en curso.")
-    players = list(game.players.order_by("joined_at", "id"))
-    idx = next(i for i, p in enumerate(players) if p.id == game.judge_id)
-    _restart_round(game, players[(idx + 1) % len(players)])
+    if game.vote_round:  # no hay juez que saltear: se repite la ronda y el turno de juez no se mueve
+        _restart_round(game, game.judge)
+    else:
+        players = list(game.players.order_by("joined_at", "id"))
+        idx = next(i for i, p in enumerate(players) if p.id == game.judge_id)
+        _restart_round(game, players[(idx + 1) % len(players)])
     game.save()
 
 
@@ -419,7 +452,10 @@ def force_judging(game_id, player_id):
     _require_host(game, player_id)
     if game.state != Game.PLAYING:
         raise GameError("No hay una ronda esperando jugadas.")
-    if not game.cards.filter(status=GameCard.PLAYED).exists():
+    submitted = game.cards.filter(status=GameCard.PLAYED).values("player_id").distinct().count()
+    if game.vote_round and submitted < 2:
+        raise GameError("Hacen falta al menos 2 jugadas para poder votar.")
+    if submitted < 1:
         raise GameError("Todavía no jugó nadie.")
     game.state = Game.JUDGING
     game.save(update_fields=["state"])
@@ -440,6 +476,65 @@ def claim_host(game_id, player_id):
     game.players.filter(is_host=True).update(is_host=False)
     me.is_host = True
     me.save(update_fields=["is_host"])
+
+
+# ---------- votación (rondas sin juez) ----------
+
+@transaction.atomic
+def vote(game_id, player_id, token):
+    """Vota por una jugada. Se puede cambiar el voto hasta que voten todos. No se puede votar la propia."""
+    game = _lock(game_id)
+    if game.state != Game.JUDGING or not game.vote_round:
+        raise GameError("Ahora no se está votando.")
+    me = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
+    if me is None:
+        raise GameError("Ya no estás en esta sala.")
+
+    target = next((author for t, author, _cards in _submissions(game) if t == token), None)
+    if target is None:
+        raise GameError("Jugada inválida.")
+    if target.id == me.id:
+        raise GameError("No podés votar tu propia carta.")
+
+    Vote.objects.update_or_create(game=game, voter=me, defaults={"target": target})
+    if game.votes.count() >= game.players.count():  # votaron todos
+        _resolve_vote(game)
+
+
+@transaction.atomic
+def close_vote(game_id, player_id):
+    """El host cierra la votación sin esperar a los que faltan (por ejemplo, alguien desconectado)."""
+    game = _lock(game_id)
+    _require_host(game, player_id)
+    if game.state != Game.JUDGING or not game.vote_round:
+        raise GameError("Ahora no se está votando.")
+    if not game.votes.exists():
+        raise GameError("Todavía no votó nadie.")
+    _resolve_vote(game)
+
+
+def _resolve_vote(game):
+    """Gana la jugada con más votos; si hay empate, se sortea entre las empatadas."""
+    counts = {}
+    for v in game.votes.all():
+        counts[v.target_id] = counts.get(v.target_id, 0) + 1
+    top = max(counts.values())
+    tied = [pid for pid, n in counts.items() if n == top]
+    winner = game.players.get(pk=random.choice(tied))
+    _finish_round(game, winner, {"mode": "vote", "votes": top, "tie": len(tied) > 1})
+
+
+def _after_leave_in_vote(game, n_players):
+    """Alguien se fue en una ronda de votación: puede que ya estén todos listos o que falten jugadas."""
+    submitted = game.cards.filter(status=GameCard.PLAYED).values("player_id").distinct().count()
+    if game.state == Game.PLAYING:
+        if submitted >= n_players:  # ya jugaron todos los que quedan
+            game.state = Game.JUDGING
+    elif game.state == Game.JUDGING:
+        if submitted < 2:  # no alcanzan las jugadas para votar: se repite la ronda
+            _restart_round(game, game.judge)
+        elif game.votes.count() >= n_players:
+            _resolve_vote(game)
 
 
 # ---------- ajustes de la partida (solo en el lobby) ----------
@@ -464,6 +559,8 @@ def update_settings(game_id, player_id, values):
         game.rerolls_per_player = in_range("Cambios de carta", values["rerolls"], REROLLS_RANGE)
     if "golden" in values:
         game.golden_per_player = in_range("Cartas doradas", values["golden"], GOLDEN_RANGE)
+    if "vote_chance" in values:
+        game.vote_chance = in_range("Probabilidad de votación", values["vote_chance"], VOTE_RANGE)
     if "golden_double" in values:
         if type(values["golden_double"]) is not bool:
             raise GameError("Ajuste inválido.")
@@ -547,20 +644,30 @@ def snapshot(game_id, player_id):
                 for gc in game.cards.filter(status=GameCard.HAND, player_id=player_id)
                 .select_related("card").order_by("id")]
 
+    # En una ronda de votación no hay juez
+    judge_id = None if game.vote_round else game.judge_id
+
     submissions = []
+    my_vote = None
+    voted_ids = set()
     if game.state == Game.JUDGING:
-        by_player = {}
-        for gc in game.cards.filter(status=GameCard.PLAYED).select_related("card").order_by("slot"):
-            by_player.setdefault(gc.player_id, []).append(gc)
+        subs = _submissions(game)
         # El id es un token opaco y el orden sale del mismo token: ni uno ni otro delatan
         # quién jugó cada respuesta (la posición en el mazo sí seguía el orden de los jugadores).
-        for cards in by_player.values():
+        for token, author, cards in subs:
             # Ojo: NO se informa cuáles son doradas. Aunque el navegador no las pinte distinto,
-            # el dato viajaría en el mensaje y el juez podría verlo en las herramientas de desarrollo.
-            # Recién se revela en last_result, cuando ya eligió.
-            submissions.append({"id": _sub_token(game, cards[0].id),
-                                "cards": [c.text for c in cards]})
-        submissions.sort(key=lambda sub: sub["id"])
+            # el dato viajaría en el mensaje y se podría ver en las herramientas de desarrollo.
+            # Recién se revela en last_result, cuando ya se eligió.
+            sub = {"id": token, "cards": [c.text for c in cards]}
+            if game.vote_round and author.id == me.id:
+                sub["mine"] = True  # solo se lo informamos a su autora: no puede votarla
+            submissions.append(sub)
+        if game.vote_round:
+            votes = list(game.votes.all())
+            voted_ids = {v.voter_id for v in votes}
+            mine = next((v for v in votes if v.voter_id == me.id), None)
+            if mine:
+                my_vote = next((t for t, author, _c in subs if author.id == mine.target_id), None)
 
     decks = []
     if game.state == Game.LOBBY:
@@ -580,20 +687,27 @@ def snapshot(game_id, player_id):
         "rerolls_per_player": game.rerolls_per_player,
         "golden_per_player": game.golden_per_player,
         "golden_double": game.golden_double,
+        "vote_chance": game.vote_chance,
+        "vote_round": game.vote_round,
+        "votes_cast": len(voted_ids),
+        "voters_total": len(players),
         "min_players": MIN_PLAYERS,
         "me": {
             "id": me.id,
             "nickname": me.nickname,
             "is_host": me.is_host,
-            "is_judge": me.id == game.judge_id,
+            "is_judge": me.id == judge_id,
             "has_played": me.id in played_ids,
+            "has_voted": me.id in voted_ids,
+            "vote": my_vote,
             "rerolls_left": me.rerolls_left,
             "golden_left": me.golden_left,
             "hand": hand,
         },
         "players": [
             {"id": p.id, "nickname": p.nickname, "is_host": p.is_host, "score": p.score,
-             "is_judge": p.id == game.judge_id, "has_played": p.id in played_ids,
+             "is_judge": p.id == judge_id, "has_played": p.id in played_ids,
+             "has_voted": p.id in voted_ids,
              "online": is_online(p, now)}
             for p in players
         ],
