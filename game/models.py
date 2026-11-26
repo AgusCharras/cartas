@@ -38,6 +38,11 @@ class Game(models.Model):
     # Votación sin juez: 0 = siempre hay juez, 100 = todas las rondas se votan,
     # en el medio = % de rondas (al azar) en las que votan todos
     vote_chance = models.PositiveSmallIntegerField(default=0)
+    # Ronda de descarte: probabilidad (%) de que una ronda sea sorpresa (la negra se revela después de jugar)
+    blind_chance = models.PositiveSmallIntegerField(default=0)
+    blind_round = models.BooleanField(default=False)  # la ronda actual es de descarte (siempre se decide votando)
+    # Rondas con juez: jugadas (por su token opaco) que el juez ya dio vuelta; el resto sigue boca abajo
+    revealed = models.JSONField(default=list, blank=True)
     vote_round = models.BooleanField(default=False)  # la ronda actual se decide votando (no hay juez)
     created_at = models.DateTimeField(auto_now_add=True)
     judge = models.ForeignKey("Player", null=True, blank=True,

@@ -12,6 +12,7 @@
 
 <div id="toast" class="toast" hidden></div>
 <div id="reveal" class="reveal" role="dialog" aria-live="polite" hidden></div>
+<div id="confirm" class="confirmwrap" role="dialog" aria-modal="true" hidden></div>
 <div id="robbed" class="reveal robbed" role="alert" hidden></div>
 <div id="steal" class="reveal stealmodal" role="dialog" hidden></div>
 <div id="podium" class="reveal podium" role="dialog" aria-live="polite" hidden></div>
@@ -22,7 +23,8 @@
     <div id="main"></div>
   </section>
 
-  <aside class="side">
+  <aside class="side" id="side">
+    <button class="sideclose" id="sideclose" aria-label="Cerrar">✕</button>
     <div class="panel">
       <h3>Jugadores (<span id="pcount">0</span>)</h3>
       <ul id="players" class="plist"></ul>
@@ -38,6 +40,7 @@
     </div>
   </aside>
 </div>
+<div id="sidebackdrop" class="backdrop" hidden></div>
 
 {{ deck_options|json_script:"deck-options" }}
 
@@ -91,6 +94,63 @@
     return n;
   }
 
+  // ---- ronda de descarte: la carta negra llega "encriptada" y se descifra al jugar todos ----
+  // El servidor no manda el texto mientras se juega: lo que se ve acá es ruido puramente decorativo.
+  const GLYPHS = "█▓▒░#@%&$*+=?/<>ΩΞΣ01";
+  const DECRYPT_MS = 1700;
+  let encRound = -1, encPattern = [], decryptRound = -1, decryptStart = 0;
+  const glyph = () => GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
+
+  function encPatternFor(round) {  // largo de palabras al azar: no tiene relación con el texto real
+    if (encRound === round) return encPattern;
+    encRound = round;
+    encPattern = Array.from({ length: 5 + Math.floor(Math.random() * 3) }, () => 2 + Math.floor(Math.random() * 7));
+    return encPattern;
+  }
+
+  function blackCardNode(s) {
+    if (s.black.secret) {
+      const n = cardNode("", "black encrypted");
+      n.dataset.enc = "1";
+      n.setAttribute("aria-label", "Carta negra secreta");
+      encPatternFor(s.round);
+      cryptEl(n);
+      return n;
+    }
+    const n = cardNode(s.black.text, "black");
+    if (s.blind_round && decryptRound === s.round && performance.now() - decryptStart < DECRYPT_MS) {
+      n.classList.add("decrypting");
+      n.dataset.real = s.black.text;
+      cryptEl(n);
+    }
+    return n;
+  }
+
+  function cryptEl(el) {
+    if (el.dataset.enc) {
+      const t = el.querySelector(".t");
+      if (t) t.textContent = encPattern.map((len) => Array.from({ length: len }, glyph).join("")).join(" ");
+    } else if (el.dataset.real !== undefined) {
+      const real = el.dataset.real;
+      const k = Math.min(1, (performance.now() - decryptStart) / DECRYPT_MS);
+      if (k >= 1) {  // listo: se vuelve a dibujar la carta normal (con sus huecos)
+        delete el.dataset.real;
+        el.classList.remove("decrypting");
+        fillBlanks(el, real);
+        return;
+      }
+      const chars = Array.from(real);
+      const done = Math.floor(chars.length * k);
+      const t = el.querySelector(".t");
+      if (t) t.textContent = chars.map((c, i) => (i < done || c === " " ? c : glyph())).join("");
+    }
+  }
+
+  function tickCrypt() {
+    for (const el of document.querySelectorAll("[data-enc], [data-real]")) cryptEl(el);
+  }
+  setInterval(tickCrypt, 70);
+
   // ---- carta dorada: una por jugador y por partida, escrita por el propio jugador ----
   const GOLDEN_MAX = 140;
   let goldenText = "";       // borrador (sobrevive a los refrescos del estado)
@@ -134,6 +194,41 @@
     return n;
   }
 
+  // Diálogo de confirmación propio (reemplaza al confirm() del navegador). Devuelve una promesa true/false.
+  let closeConfirm = null;
+  function askConfirm({ icon = "❔", title, text, content, ok = "Aceptar", cancel = "Cancelar", tone = "ok" }) {
+    return new Promise((resolve) => {
+      if (closeConfirm) closeConfirm(false);
+      const box = $("confirm");
+      const finish = (v) => {
+        document.removeEventListener("keydown", onKey, true);
+        box.hidden = true;
+        box.replaceChildren();
+        closeConfirm = null;
+        resolve(v);
+      };
+      const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); } };
+      closeConfirm = finish;
+      box.replaceChildren();
+      const card = node("div", undefined, "confirmbox " + tone);
+      card.append(node("div", icon, "confirmicon"), node("h3", title));
+      if (text) card.append(node("p", text, "confirmtext"));
+      if (content) card.append(content);
+      const row = node("div", undefined, "confirmrow");
+      const no = node("button", cancel, "ghostbtn confirmno");
+      no.onclick = () => finish(false);
+      const yes = node("button", ok, "confirmok");
+      yes.onclick = () => finish(true);
+      row.append(no, yes);
+      card.append(row);
+      box.append(card);
+      box.onclick = (e) => { if (e.target === box) finish(false); };  // tocar afuera cancela
+      box.hidden = false;
+      document.addEventListener("keydown", onKey, true);
+      yes.focus();
+    });
+  }
+
   function showToast(msg) {
     const t = $("toast");
     t.textContent = msg;
@@ -155,8 +250,32 @@
     return n;
   }
 
+  // ---- ranking y chat como panel lateral en pantallas chicas ----
+  let unread = 0;
+  const narrow = () => window.matchMedia("(max-width: 960px)").matches;
+  const sideIsOpen = () => $("side").classList.contains("open");
+  function updateUnread() {
+    for (const el of document.querySelectorAll(".chatbadge")) { el.textContent = String(unread); el.hidden = !unread; }
+  }
+  function openSide(which) {
+    $("side").classList.add("open");
+    $("sidebackdrop").hidden = false;
+    document.body.classList.add("noscroll");
+    if (which === "chat") { unread = 0; updateUnread(); $("side").scrollTop = $("side").scrollHeight; }
+    else $("side").scrollTop = 0;
+  }
+  function closeSide() {
+    $("side").classList.remove("open");
+    $("sidebackdrop").hidden = true;
+    document.body.classList.remove("noscroll");
+  }
+  $("sideclose").onclick = closeSide;
+  $("sidebackdrop").onclick = closeSide;
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSide(); });
+
   // ---- chat ----
   function addChat(nick, text) {
+    if (narrow() && !sideIsOpen() && !(state && state.me.nickname === nick)) { unread++; updateUnread(); }
     const log = $("chatlog");
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
     const row = node("div", undefined, "chatmsg");
@@ -183,7 +302,33 @@
     if (i >= 0) selected.splice(i, 1);
     else { selected.push(id); if (selected.length > pick) selected.shift(); }
     focusGolden = id === "G" && selected.includes("G");
-    renderMain(state);
+    if (!refreshSelection()) renderMain(state);
+  }
+
+  // Cambia la selección SIN redibujar la mano: así las cartas suben y bajan con transición.
+  // Devuelve false si hay que redibujar (la dorada cambia de forma: aparece su cuadro de texto).
+  let rollBtn = null;
+  const rollDisabled = (s) => (s.me.rerolls_left ?? 0) <= 0 || selected.length !== 1 || selected[0] === "G" || !!s.me.robbed_by;
+  function refreshSelection() {
+    const s = state;
+    if (!s || s.state !== "playing") return false;
+    const els = [...document.querySelectorAll(".fan .c.fc")];
+    if (!els.length) return false;
+    const gold = els.find((e) => e.classList.contains("gold"));
+    if (gold && (gold.classList.contains("selected") || selected.includes("G"))) return false;
+    const pick = s.black.pick;
+    const texts = new Map(s.me.hand.map((c) => [c.id, c.text]));
+    els.forEach((el, i) => {
+      if (el === gold) return;
+      const cid = Number(el.dataset.cid);
+      const idx = selected.indexOf(cid);
+      el.classList.toggle("selected", idx >= 0);
+      el.textContent = idx >= 0 && pick > 1 ? `${idx + 1}. ${texts.get(cid)}` : texts.get(cid);
+      el.style.zIndex = idx >= 0 ? "60" : String(i + 1);
+    });
+    updateSend();
+    if (rollBtn) rollBtn.disabled = rollDisabled(s);
+    return true;
   }
 
   // ---- render ----
@@ -382,13 +527,36 @@
     box.append(stage);
   }
 
+  // El aviso del último ganador se puede minimizar (queda un chip chico) y se recuerda en este navegador
+  let resultMin = false;
+  try { resultMin = localStorage.getItem("resultMin") === "1"; } catch (e) { /* sin almacenamiento: se muestra siempre */ }
+  function setResultMin(v) {
+    resultMin = v;
+    try { localStorage.setItem("resultMin", v ? "1" : "0"); } catch (e) { /* idem */ }
+    if (state) renderResult(state, false);
+  }
+
   function renderResult(s, first) {
     const r = $("result");
     if (!s.last_result || s.state === "lobby") { r.hidden = true; return; }
     const l = s.last_result;
     r.hidden = false;
-    r.textContent = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`
-      + (l.mode === "vote" ? ` · 🗳️ ${l.votes} voto${l.votes === 1 ? "" : "s"}${l.tie ? " (desempate por sorteo)" : ""}` : "");
+    r.classList.toggle("min", resultMin);
+    r.replaceChildren();
+    if (resultMin) {
+      const chip = node("button", `🏆 Ronda ${l.round}: ganó ${l.winner}`, "reschip");
+      chip.title = "Mostrar el detalle del último ganador";
+      chip.onclick = () => setResultMin(false);
+      r.append(chip);
+    } else {
+      const txt = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`
+        + (l.mode === "vote" ? ` · 🗳️ ${l.votes} voto${l.votes === 1 ? "" : "s"}${l.tie ? " (desempate por sorteo)" : ""}` : "");
+      const min = node("button", "—", "resmin");
+      min.title = "Minimizar";
+      min.setAttribute("aria-label", "Minimizar el último ganador");
+      min.onclick = () => setResultMin(true);
+      r.append(node("span", txt, "restext"), min);
+    }
     if (l.round !== shownRound) {
       shownRound = l.round;
       if (!first) {  // al entrar o recargar no se anima
@@ -408,7 +576,7 @@
   let lockUntil = 0, lockTimer = null;
 
   function canSteal(s) {
-    return s.state === "playing" && (s.steals_per_player ?? 0) > 0 && (s.me.steals_left ?? 0) > 0
+    return s.state === "playing" && !s.blind_round && (s.steals_per_player ?? 0) > 0 && (s.me.steals_left ?? 0) > 0
       && !s.me.has_played && !s.me.robbed_by && (!s.me.is_judge || s.vote_round);
   }
 
@@ -438,7 +606,8 @@
 
   function renderSteal(s, justOpened) {
     const box = $("steal");
-    const p = stealTarget === null ? null : s.players.find((x) => x.id === stealTarget);
+    if (stealTarget === null) { if (pickerOpen) renderStealPicker(s); return; }
+    const p = s.players.find((x) => x.id === stealTarget);
     const ok = p && canSteal(s) && !p.has_played && (p.robbing_me || justOpened)
       && (s.hand_counts?.[p.id] ?? p.hand_count ?? 0) > 0;
     if (!ok) { if (stealTarget !== null) closeSteal(false); return; }
@@ -530,8 +699,10 @@
       if (s.me.is_host && p.id !== s.me.id && s.state !== "finished") {
         const k = node("button", "✕", "kick");
         k.title = `Expulsar a ${p.nickname}`;
-        k.onclick = () => {
-          if (confirm(`¿Expulsar a ${p.nickname}?`)) send({ action: "kick", player: p.id });
+        k.onclick = async () => {
+          const yes = await askConfirm({ icon: "🚪", title: `¿Expulsar a ${p.nickname}?`,
+            text: "Sale de la sala y no puede volver con ese mismo jugador.", ok: "Expulsar", tone: "danger" });
+          if (yes) send({ action: "kick", player: p.id });
         };
         li.append(k);
       }
@@ -582,17 +753,21 @@
     }
     if (s.me.is_host && (s.state === "playing" || s.state === "judging")) {
       const b = node("button", s.vote_round ? "Cancelar ronda" : "Saltear al juez");
-      b.onclick = () => {
-        const msg = s.vote_round ? "Se cancela la ronda y se vuelve a empezar con otra carta negra. ¿Seguro?"
-                                 : "Se cancela la ronda y pasa a otro juez. ¿Seguro?";
-        if (confirm(msg)) send({ action: "skip_judge" });
+      b.onclick = async () => {
+        const yes = await askConfirm({ icon: "⏭️", title: s.vote_round ? "¿Cancelar la ronda?" : "¿Saltear al juez?",
+          text: s.vote_round ? "Se cancela la ronda y se vuelve a empezar con otra carta negra."
+                             : "Se cancela la ronda y pasa a otro juez.",
+          ok: s.vote_round ? "Cancelar ronda" : "Saltear", cancel: "Volver", tone: "danger" });
+        if (yes) send({ action: "skip_judge" });
       };
       box.append(b);
     }
     if (s.me.is_host && s.state === "judging" && s.vote_round && s.votes_cast > 0) {
       const b = node("button", "Cerrar votación");
-      b.onclick = () => {
-        if (confirm("Se cuentan los votos que hay y gana la jugada más votada. ¿Cerrar la votación?")) send({ action: "close_vote" });
+      b.onclick = async () => {
+        const yes = await askConfirm({ icon: "🗳️", title: "¿Cerrar la votación?",
+          text: "Se cuentan los votos que hay y gana la jugada más votada.", ok: "Cerrar votación", cancel: "Seguir votando" });
+        if (yes) send({ action: "close_vote" });
       };
       box.append(b);
     }
@@ -602,12 +777,16 @@
       box.append(b);
     }
     const leave = node("button", "Salir de la sala");
-    leave.onclick = () => { if (confirm("¿Salir de la sala?")) send({ action: "leave" }); };
+    leave.onclick = async () => {
+      const yes = await askConfirm({ icon: "👋", title: "¿Salir de la sala?",
+        text: "Dejás la partida y tu lugar queda libre.", ok: "Salir", cancel: "Quedarme", tone: "danger" });
+      if (yes) send({ action: "leave" });
+    };
     box.append(leave);
   }
 
   // ---- reglas de la partida (el host las cambia en el lobby; los demás las ven) ----
-  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95], steals: [0, 5] };  // igual que en el servidor
+  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95], steals: [0, 5], blind_chance: [0, 100] };  // igual que en el servidor
 
   function setRule(values) {
     send({ action: "settings", values });
@@ -653,6 +832,11 @@
     box.append(stepperRow(s, "🔄 Cambios de carta por jugador", "rerolls", s.rerolls_per_player, ""));
     box.append(stepperRow(s, "⭐ Cartas doradas por jugador", "golden", s.golden_per_player, ""));
     box.append(stepperRow(s, "🦹 Robos de carta por jugador", "steals", s.steals_per_player ?? 0, ""));
+    box.append(stepperRow(s, "🕶️ Rondas de descarte (sorpresa)", "blind_chance", s.blind_chance ?? 0, "%", 5));
+    if ((s.blind_chance ?? 0) > 0) {
+      box.append(node("p", "En esas rondas la negra es secreta, se juega 1 sola carta (la que menos te importe), "
+        + "sin dorada, cambios ni robos, y después se vota entre todos.", "hint"));
+    }
 
     // La dorada vale doble: solo tiene sentido si hay doradas
     const dbl = node("label", undefined, "rule dbl" + (s.golden_per_player === 0 ? " off" : ""));
@@ -798,34 +982,241 @@
     main.append(a);
   }
 
+  // ---- mesa: negra a la izquierda, jugadas al centro y la mano en abanico abajo ----
+  let seenRound = -1, seenSubs = new Set();  // jugadas ya mostradas boca arriba (para animar solo las nuevas)
+
+  // Cartas que entran a la mano (rolleo o robo): id -> cuándo y de qué tipo, para animarlas al dibujarse
+  const dealQueue = new Map();
+
+  // Compara la mano de antes con la nueva (misma ronda, antes de jugar) y anima lo que salió y lo que entró
+  function animateHandChanges(prev, s) {
+    if (!prev || prev.state !== "playing" || s.state !== "playing" || prev.round !== s.round) return;
+    if (prev.me.has_played || s.me.has_played) return;
+    const had = new Set(prev.me.hand.map((c) => c.id)), has = new Set(s.me.hand.map((c) => c.id));
+    const gone = prev.me.hand.filter((c) => !has.has(c.id));
+    const came = s.me.hand.filter((c) => !had.has(c.id));
+    if (!gone.length && !came.length) return;
+    const reroll = gone.length > 0 && came.length > 0;
+    for (const c of gone) {
+      const el = document.querySelector(`.fan .c.fc[data-cid="${c.id}"]`);
+      if (el) spawnGhost(el, reroll ? "reroll" : "stolen");
+    }
+    for (const c of came) dealQueue.set(c.id, { kind: reroll ? "reroll" : "gain", at: performance.now() });
+  }
+
+  // Copia flotante de la carta que se va: sigue donde estaba mientras la vieja desaparece del abanico
+  function spawnGhost(el, kind) {
+    const r = el.getBoundingClientRect();
+    if (!r.width) return;
+    const cs = getComputedStyle(el);
+    const g = el.cloneNode(true);
+    g.className = "c white ghostout " + kind;
+    g.removeAttribute("style");
+    g.style.cssText = `left:${r.left + r.width / 2 - el.offsetWidth / 2}px;top:${r.top + r.height / 2 - el.offsetHeight / 2}px;`
+      + `width:${el.offsetWidth}px;height:${el.offsetHeight}px;font-size:${cs.fontSize};padding:${cs.padding};`
+      + `--ang:${el.style.getPropertyValue("--ang") || "0deg"};--sc:${el.classList.contains("selected") ? 1.2 : 1};`;
+    document.body.append(g);
+    g.addEventListener("animationend", () => g.remove());
+    setTimeout(() => g.remove(), 1500);  // por si el navegador no dispara animationend
+  }
+
+  function pendingPill(s) {
+    const pill = node("div", undefined, "pill pendpill");
+    let long, short, title = "";
+    if (s.state === "playing") {
+      const pend = s.players.filter((x) => !x.is_judge && !x.has_played);
+      title = pend.map((x) => x.nickname).join(", ");
+      long = pend.length ? "⏳ Faltan: " + title : "✔ Todos jugaron";
+      short = pend.length ? `⏳ Faltan ${pend.length}` : "✔ Todos jugaron";
+    } else if (s.vote_round) {
+      long = short = `🗳️ Votaron ${s.votes_cast} de ${s.voters_total}`;
+    } else {
+      const done = s.submissions.filter((x) => x.revealed !== false).length;
+      long = short = s.me.is_judge ? `👀 Leídas ${done} de ${s.submissions.length}` : "⚖️ El juez está leyendo";
+    }
+    pill.append(node("span", long, "long"), node("span", short, "short"));
+    if (title) pill.title = title;
+    return pill;
+  }
+
+  // Mano en abanico: cada carta lleva su posición (--t) y su giro (--ang); el CSS hace el resto
+  function fanNode(s, pick) {
+    const showGold = !s.blind_round && (s.me.golden_left ?? 0) > 0;
+    const els = [];
+    if (showGold) els.push(goldenCardNode(pick));
+    for (const c of s.me.hand) {
+      const idx = selected.indexOf(c.id);
+      const label = idx >= 0 && pick > 1 ? `${idx + 1}. ${c.text}` : c.text;
+      const cardEl = cardNode(label, "white" + (idx >= 0 ? " selected" : ""), () => toggle(c.id, pick));
+      const dq = dealQueue.get(c.id);
+      if (dq) {
+        const el = performance.now() - dq.at;
+        if (el < 1000) {  // como la mano se redibuja, la animación retoma desde donde iba
+          cardEl.classList.add("dealin", dq.kind);
+          cardEl.style.animationDelay = `${(dq.kind === "reroll" ? 140 : 0) - el}ms`;
+        } else dealQueue.delete(c.id);
+      }
+      els.push(cardEl);
+    }
+    const n = els.length;
+    const fan = node("div", undefined, "fan");
+    fan.style.setProperty("--nm1", String(Math.max(1, n - 1)));
+    const spread = Math.min(4.5, 32 / Math.max(1, n - 1));  // grados entre cartas contiguas
+    els.forEach((el, i) => {
+      const t = i - (n - 1) / 2;
+      el.classList.add("fc");
+      if (el.dataset.cid === undefined && s.me.hand[i - (showGold ? 1 : 0)]) el.dataset.cid = String(s.me.hand[i - (showGold ? 1 : 0)].id);
+      el.style.setProperty("--t", String(t));
+      el.style.setProperty("--ang", (t * spread).toFixed(2) + "deg");
+      el.style.setProperty("--dy", (t * t * 2.2).toFixed(1) + "px");
+      el.style.zIndex = el.classList.contains("selected") ? "60" : String(i + 1);
+      fan.append(el);
+    });
+    return fan;
+  }
+
+  // Con 1 sola carta por jugada, las flechas pasan la selección a la carta anterior/siguiente
+  function stepSelection(dir) {
+    const s = state;
+    const ids = [];
+    if (!s.blind_round && (s.me.golden_left ?? 0) > 0) ids.push("G");
+    s.me.hand.forEach((c) => ids.push(c.id));
+    if (!ids.length) return;
+    const cur = ids.indexOf(selected[0]);
+    const next = ids[(cur + dir + ids.length) % ids.length];
+    selected = [next];
+    focusGolden = next === "G";
+    if (!refreshSelection()) renderMain(s);
+  }
+
+  // Selector de a quién robarle (la víctima se elige antes de ver su mano boca abajo)
+  let pickerOpen = false;
+  function openStealPicker() { pickerOpen = true; renderStealPicker(state); }
+  function closePicker() { pickerOpen = false; if (stealTarget === null) $("steal").hidden = true; }
+  function renderStealPicker(s) {
+    const box = $("steal");
+    if (!canSteal(s)) { closePicker(); return; }
+    box.hidden = false;
+    box.replaceChildren();
+    const card = node("div", undefined, "stealbox");
+    card.append(node("h3", "🦹 ¿A quién le robás?"));
+    card.append(node("p", `Te quedan ${s.me.steals_left} robo${s.me.steals_left === 1 ? "" : "s"}. `
+      + "Primero elegís a la víctima y después una carta a ciegas.", "hint"));
+    const list = node("div", undefined, "targets");
+    for (const p of s.players.filter((x) => canStealFrom(s, x))) {
+      const b = node("button", undefined, "target");
+      b.append(avatarNode(p.nickname), node("span", p.nickname),
+               node("small", `${s.hand_counts?.[p.id] ?? p.hand_count ?? 0} cartas`));
+      b.onclick = () => { pickerOpen = false; startSteal(p); };
+      list.append(b);
+    }
+    if (!list.children.length) list.append(node("p", "Ahora no hay a quién robarle: ya jugaron o ya los robaron.", "hint"));
+    card.append(list);
+    const cancel = node("button", "Cancelar", "ghostbtn");
+    cancel.onclick = closePicker;
+    card.append(cancel);
+    box.append(card);
+  }
+
   function renderBoard(main, s) {
     const board = node("div", undefined, "board");
     const pick = s.black.pick;
+    const playing = s.state === "playing";
+
+    // Barra superior: quiénes faltan + accesos al ranking y al chat (en pantallas chicas son paneles laterales)
+    const bar = node("div", undefined, "gamebar");
+    bar.append(pendingPill(s), node("span", undefined, "spacer"));
+    const rank = node("button", "🏆 Ranking", "pill sidebtn");
+    rank.onclick = () => openSide("rank");
+    const chat = node("button", "💬 Chat", "pill sidebtn");
+    const badge = node("span", String(unread), "unreadbadge chatbadge");
+    badge.hidden = !unread;
+    chat.append(badge);
+    chat.onclick = () => openSide("chat");
+    bar.append(rank, chat);
+    board.append(bar);
 
     if (s.vote_round) {  // ronda sin juez: el aviso se anima solo la primera vez en cada ronda
-      const vb = node("div", "🗳️ Ronda de votación: todos juegan y todos votan. No podés votar tu propia carta.",
-                      "votebanner" + (voteBannerRound !== s.round ? " pop" : ""));
+      const vtext = !s.blind_round
+        ? "🗳️ Ronda de votación: todos juegan y todos votan. No podés votar tu propia carta."
+        : playing
+          ? "🕶️ Ronda de descarte: la carta negra es sorpresa. Jugá la carta que MENOS te importe perder; se revela cuando todos jugaron."
+          : "🕶️ Ronda de descarte: así quedó la negra. Votá la mejor respuesta (no la tuya).";
+      const vb = node("div", vtext, "votebanner" + (voteBannerRound !== s.round ? " pop" : ""));
       voteBannerRound = s.round;
       board.append(vb);
     }
 
-    // Fila superior: carta negra + mesa
-    const top = node("div", undefined, "toprow");
-    top.append(cardNode(s.black.text, "black"));
-    const tableEl = node("div", undefined, "tablecards");
+    const canAct = playing && !s.me.is_judge && !s.me.has_played;
+    rollBtn = null;
 
-    if (s.state === "playing") {
-      // Boca abajo: nadie ve qué jugó cada uno hasta el juicio
-      for (const p of s.players.filter((x) => !x.is_judge)) {
-        tableEl.append(p.has_played ? cardNode("", "back") : node("div", undefined, "slot"));
+    // Escenario: herramientas | carta negra | jugadas de la mesa
+    const arena = node("div", undefined, "arena" + (playing ? "" : " judging"));
+    const tools = node("div", undefined, "tools");
+    if (canAct) {
+      if (s.steals_per_player > 0 && !s.blind_round) {
+        const st = node("button", `🦹 Choriar (${s.me.steals_left ?? 0})`, "btn-steal");
+        st.disabled = !canSteal(s) || !s.players.some((p) => canStealFrom(s, p));
+        st.onclick = openStealPicker;
+        tools.append(st);
       }
+      if (s.rerolls_per_player > 0 && !s.blind_round) {
+        const left = s.me.rerolls_left ?? 0;
+        const rr = node("button", `🔄 Rollear (${left})`, "btn-roll");
+        rr.disabled = rollDisabled(s);
+        rollBtn = rr;
+        rr.title = "Elegí una carta y tocá acá para cambiarla por otra";
+        rr.onclick = async () => {
+          const id = selected[0];
+          const old = state.me.hand.find((c) => c.id === id);
+          if (!old) return;
+          const prev = node("div", undefined, "confirmcard");
+          prev.append(cardNode(old.text, "white"));
+          const after = (state.me.rerolls_left ?? 0) - 1;
+          const yes = await askConfirm({ icon: "🔄", title: "¿Rollear esta carta?", content: prev, tone: "roll",
+            text: `Se descarta y recibís una nueva al azar. ${after > 0 ? `Después te quedan ${after} cambio${after === 1 ? "" : "s"}.` : "Es tu último cambio."}`,
+            ok: "Rollear", cancel: "Me la quedo" });
+          if (yes && selected[0] === id) send({ action: "reroll", card: id });
+        };
+        tools.append(rr);
+      }
+    }
+    arena.append(tools);
+    const blackWrap = node("div", undefined, "blackwrap");
+    blackWrap.append(blackCardNode(s));
+    arena.append(blackWrap);
+
+    const tableEl = node("div", undefined, "tablecards" + (playing ? " pile" : ""));
+    if (playing) {
+      // Boca abajo y apiladas: nadie ve qué jugó cada uno hasta el juicio
+      const played = s.players.filter((x) => !x.is_judge && x.has_played);
+      if (played.length) played.forEach(() => tableEl.append(cardNode("", "back")));
+      else tableEl.append(node("div", undefined, "slot"));
     } else {
       const voting = !!s.vote_round;
+      if (seenRound !== s.round) { seenRound = s.round; seenSubs = new Set(); }
       for (const sub of s.submissions) {
+        const faceUp = sub.revealed !== false;
+        if (!faceUp) {  // boca abajo: solo el juez puede darla vuelta (con un clic)
+          const down = node("div", undefined, "sub facedown" + (s.me.is_judge ? " clickable" : ""));
+          for (let i = 0; i < (sub.n || 1); i++) down.append(cardNode("", "back"));
+          if (s.me.is_judge) {
+            down.title = "Tocá para darla vuelta";
+            down.onclick = () => {
+              down.classList.add("turning");
+              send({ action: "reveal", submission: sub.id });
+            };
+          }
+          tableEl.append(down);
+          continue;
+        }
+        const fresh = !seenSubs.has(sub.id);
+        seenSubs.add(sub.id);
         const canPick = voting ? !sub.mine : s.me.is_judge;  // en votación, la propia jugada no se puede votar
         const group = node("div", undefined, "sub" + (selectedSub === sub.id ? " selected" : "")
                                                     + (canPick ? " clickable" : "") + (sub.mine ? " mine" : "")
-                                                    + (voting && s.me.vote === sub.id ? " voted" : ""));
+                                                    + (voting && s.me.vote === sub.id ? " voted" : "")
+                                                    + (fresh && !voting ? " flipin" : ""));
         sub.cards.forEach((t) => group.append(cardNode(t, "white")));
         if (sub.mine) group.append(node("div", "Tu jugada", "subtag"));
         else if (voting && s.me.vote === sub.id) group.append(node("div", "✅ Tu voto", "subtag"));
@@ -838,19 +1229,26 @@
         tableEl.append(group);
       }
     }
-    top.append(tableEl);
-    board.append(top);
+    arena.append(tableEl);
+    board.append(arena);
 
     // Acciones
     const actions = node("div", undefined, "actions");
-    if (s.state === "playing") {
+    if (playing) {
       if (s.me.is_judge) {
         actions.append(node("p", "⚖️ Sos el juez de esta ronda. Esperá a que los demás jueguen.", "hint"));
       } else if (s.me.has_played) {
         actions.append(node("p", "Ya jugaste. Esperando al resto…", "hint"));
       } else {
-        const left = s.me.rerolls_left ?? 0;
-        const play = node("button", pick > 1 ? `✈ Enviar ${pick} cartas` : "✈ Enviar carta", "bigbtn");
+        const row = node("div", undefined, "playrow");
+        const arrows = pick === 1 && s.me.hand.length > 1;
+        if (arrows) {
+          const prev = node("button", "◀", "arrow");
+          prev.setAttribute("aria-label", "Carta anterior");
+          prev.onclick = () => stepSelection(-1);
+          row.append(prev);
+        }
+        const play = node("button", pick > 1 ? `Jugar ${pick} cartas` : "Jugar", "bigbtn");
         play.disabled = !canPlay();
         playBtn = play;
         play.onclick = () => {
@@ -860,16 +1258,14 @@
           send(msg);
           // La selección se limpia sola cuando llega el estado nuevo (si hay un error, no se pierde)
         };
-
-        const rr = node("button", `🔄 Cambiar carta (${left})`, "ghostbtn");
-        rr.disabled = left <= 0 || selected.length !== 1 || selected[0] === "G" || !!s.me.robbed_by;
-        rr.onclick = () => {
-          if (confirm("Se descarta la carta elegida y recibís una nueva. ¿Seguro?")) {
-            send({ action: "reroll", card: selected[0] });
-          }
-        };
-        if (s.rerolls_per_player > 0) actions.append(play, rr);
-        else actions.append(play);
+        row.append(play);
+        if (arrows) {
+          const next = node("button", "▶", "arrow");
+          next.setAttribute("aria-label", "Carta siguiente");
+          next.onclick = () => stepSelection(1);
+          row.append(next);
+        }
+        actions.append(row);
       }
     } else if (s.vote_round) {
       const mine = s.me.vote;
@@ -877,35 +1273,34 @@
       vote.disabled = selectedSub === null || selectedSub === mine;
       vote.onclick = () => send({ action: "vote", submission: selectedSub });
       actions.append(vote);
-      actions.append(node("p", `Votaron ${s.votes_cast} de ${s.voters_total}` + (mine
-        ? " · ya votaste, podés cambiar tu voto hasta que voten todos"
-        : " · tocá la respuesta que más te guste (no la tuya)"), "hint"));
+      actions.append(node("p", mine
+        ? "Ya votaste, podés cambiar tu voto hasta que voten todos"
+        : "Tocá la respuesta que más te guste (no la tuya)", "hint"));
     } else if (s.me.is_judge) {
       const win = node("button", "🏆 Elegir ganadora", "bigbtn");
       win.disabled = selectedSub === null;
       win.onclick = () => { send({ action: "pick_winner", submission: selectedSub }); selectedSub = null; };
       actions.append(win);
-      if (selectedSub === null) actions.append(node("p", "Tocá la respuesta que más te gustó.", "hint"));
+      const anyUp = s.submissions.some((x) => x.revealed !== false);
+      const allUp = s.submissions.every((x) => x.revealed !== false);
+      if (!anyUp) actions.append(node("p", "Tocá una carta para darla vuelta y leerla.", "hint"));
+      else if (selectedSub === null) {
+        actions.append(node("p", allUp ? "Tocá la respuesta que más te gustó."
+          : "Seguí dando vuelta las cartas y tocá la que más te guste para elegirla.", "hint"));
+      }
     } else {
-      actions.append(node("p", "El juez está eligiendo…", "hint"));
+      actions.append(node("p", "El juez está dando vuelta las cartas y leyéndolas…", "hint"));
     }
     board.append(actions);
 
-    // Mano (solo en la fase de jugar, y no para el juez)
-    if (s.state === "playing" && !s.me.is_judge) {
-      const wrap = node("div", undefined, "handwrap");
-      const count = node("div", undefined, "handcount");
-      count.append(node("span", "Tus cartas:"), node("strong", String(s.me.hand.length)));
-
-      const hand = node("div", undefined, "hand" + (s.me.has_played ? " locked" : ""));
-      if (!s.me.has_played && (s.me.golden_left ?? 0) > 0) hand.append(goldenCardNode(pick));
-      for (const c of s.me.hand) {
-        const idx = selected.indexOf(c.id);
-        const label = idx >= 0 && pick > 1 ? `${idx + 1}. ${c.text}` : c.text;
-        hand.append(cardNode(label, "white" + (idx >= 0 ? " selected" : ""),
-                             s.me.has_played ? null : () => toggle(c.id, pick)));
+    // Mano en abanico (solo mientras se juega, y no para el juez)
+    if (playing && !s.me.is_judge) {
+      const wrap = node("div", undefined, "fanwrap" + (s.me.has_played ? " locked" : ""));
+      if (s.me.has_played) {
+        wrap.append(node("div", undefined, "fan fan-empty"));
+      } else {
+        wrap.append(fanNode(s, pick));
       }
-      wrap.append(count, hand);
       board.append(wrap);
     }
 
@@ -937,7 +1332,16 @@
   function render(s) {
     const first = state === null;  // primer estado recibido (entrada o recarga)
     const justFinished = !first && s.state === "finished" && state.state !== "finished";
+    const ingame = s.state === "playing" || s.state === "judging";
+    document.querySelector(".layout").classList.toggle("game", ingame);
+    document.body.classList.toggle("ingame", ingame);
+    if (!ingame) closeSide();
+    animateHandChanges(state, s);
+    if (first && s.submissions) { seenRound = s.round; seenSubs = new Set(s.submissions.filter((x) => x.revealed !== false).map((x) => x.id)); }
     trackScores(s);
+    if (state && state.black && state.black.secret && s.black && !s.black.secret && s.round === state.round) {
+      decryptRound = s.round; decryptStart = performance.now();
+    }
     state = s;
     const ids = new Set(s.me.hand.map((c) => c.id));
     const goldenOk = s.state === "playing" && !s.me.is_judge && !s.me.has_played

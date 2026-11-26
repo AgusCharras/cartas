@@ -146,18 +146,28 @@ def start_game(game_id, player_id):
 
 def _start_round(game):
     """Saca una negra del mazo y abre la ronda. Si no quedan negras, termina la partida."""
-    black = (game.cards.filter(status=GameCard.DECK, card__kind=Card.BLACK)
-             .order_by("position").first())
-    if black is None:
+    blacks = list(game.cards.filter(status=GameCard.DECK, card__kind=Card.BLACK)
+                  .select_related("card").order_by("position"))
+    if not blacks:
         game.state = Game.FINISHED
         return
+    # Ronda de descarte (sorpresa): se juega sin ver la negra, así que tiene que ser de UNA sola carta
+    blind = random.randrange(100) < game.blind_chance
+    black = None
+    if blind:
+        black = next((b for b in blacks if _pick_of(b.card) == 1), None)
+        blind = black is not None
+    if black is None:
+        black = blacks[0]
     black.status = GameCard.CURRENT
     black.save(update_fields=["status"])
     game.round_number += 1
     game.state = Game.PLAYING
     game.players.update(locked_by=None, locked_at=None)
-    # Ronda de votación: no hay juez, todos juegan y todos votan
-    game.vote_round = random.randrange(100) < game.vote_chance
+    game.blind_round = blind
+    game.revealed = []
+    # Ronda de votación: no hay juez, todos juegan y todos votan (la de descarte siempre se vota)
+    game.vote_round = blind or random.randrange(100) < game.vote_chance
 
 
 @transaction.atomic
@@ -175,6 +185,8 @@ def play_cards(game_id, player_id, card_ids, golden=None):
     if me is not None and _lock_active(me):
         raise GameError("Te están robando una carta: esperá un momento.")
 
+    if game.blind_round and golden:
+        raise GameError("En la ronda de descarte no se puede usar la carta dorada.")
     pick = _pick_of(_current_black(game).card)
     if len(card_ids) + (1 if golden else 0) != pick or len(set(card_ids)) != len(card_ids):
         raise GameError(f"Tenés que elegir {pick} carta(s) distintas.")
@@ -234,6 +246,8 @@ def reroll_card(game_id, player_id, card_id):
         raise GameError("Ya jugaste en esta ronda.")
     if _lock_active(player):
         raise GameError("Te están robando una carta: esperá un momento.")
+    if game.blind_round:
+        raise GameError("En la ronda de descarte no hay cambios: jugá la carta que menos te importe.")
     if player.rerolls_left <= 0:
         raise GameError("No te quedan cambios." if game.rerolls_per_player
                         else "En esta partida no hay cambios de carta.")
@@ -271,8 +285,27 @@ def pick_winner(game_id, player_id, submission_id):
             break
     if first is None:
         raise GameError("Jugada inválida.")
+    if submission_id not in game.revealed:
+        raise GameError("Primero dá vuelta esa jugada para leerla.")
 
     _finish_round(game, first.player)
+
+
+@transaction.atomic
+def reveal_submission(game_id, player_id, submission_id):
+    """El juez da vuelta una jugada (boca abajo hasta entonces). Todos ven cómo se va leyendo."""
+    game = _lock(game_id)
+    if game.state != Game.JUDGING:
+        raise GameError("Todavía no hay jugadas para dar vuelta.")
+    if game.vote_round:
+        raise GameError("En las rondas de votación las jugadas se ven todas juntas.")
+    if player_id != game.judge_id:
+        raise GameError("Solo el juez da vuelta las cartas.")
+    if not any(t == submission_id for t, _a, _c in _submissions(game)):
+        raise GameError("Jugada inválida.")
+    if submission_id not in game.revealed:
+        game.revealed = [*game.revealed, submission_id]
+        game.save(update_fields=["revealed"])
 
 
 def _finish_round(game, winner, extra=None):
@@ -576,6 +609,8 @@ def _check_steal(game, player_id, target_id):
     """Validaciones comunes de empezar un robo y de completarlo. Devuelve (ladrón, víctima)."""
     if game.state != Game.PLAYING:
         raise GameError("Solo se puede robar mientras se elige la carta de la ronda.")
+    if game.blind_round:
+        raise GameError("En la ronda de descarte no se puede robar.")
     thief = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
     if thief is None:
         raise GameError("Ya no estás en esta sala.")
@@ -676,6 +711,8 @@ def update_settings(game_id, player_id, values):
         game.golden_per_player = in_range("Cartas doradas", values["golden"], GOLDEN_RANGE)
     if "steals" in values:
         game.steals_per_player = in_range("Robos de carta", values["steals"], STEALS_RANGE)
+    if "blind_chance" in values:
+        game.blind_chance = in_range("Probabilidad de ronda de descarte", values["blind_chance"], VOTE_RANGE)
     if "vote_chance" in values:
         game.vote_chance = in_range("Probabilidad de votación", values["vote_chance"], VOTE_RANGE)
     if "golden_double" in values:
@@ -753,7 +790,9 @@ def snapshot(game_id, player_id):
     black = None
     if in_round:
         card = _current_black(game).card
-        black = {"text": card.text, "pick": _pick_of(card)}
+        # Ronda de descarte: el texto NO sale del servidor hasta que todos jugaron (si no, se podría leer del socket)
+        secret = game.blind_round and game.state == Game.PLAYING
+        black = {"text": None if secret else card.text, "pick": _pick_of(card), "secret": secret}
 
     hand = []
     if in_round:
@@ -781,7 +820,11 @@ def snapshot(game_id, player_id):
             # Ojo: NO se informa cuáles son doradas. Aunque el navegador no las pinte distinto,
             # el dato viajaría en el mensaje y se podría ver en las herramientas de desarrollo.
             # Recién se revela en last_result, cuando ya se eligió.
-            sub = {"id": token, "cards": [c.text for c in cards]}
+            # Con juez, cada jugada viaja boca abajo (sin texto) hasta que el juez la da vuelta
+            if game.vote_round or token in game.revealed:
+                sub = {"id": token, "cards": [c.text for c in cards], "revealed": True}
+            else:
+                sub = {"id": token, "n": len(cards), "revealed": False}
             if game.vote_round and author.id == me.id:
                 sub["mine"] = True  # solo se lo informamos a su autora: no puede votarla
             submissions.append(sub)
@@ -813,6 +856,8 @@ def snapshot(game_id, player_id):
         "steals_per_player": game.steals_per_player,
         "vote_chance": game.vote_chance,
         "vote_round": game.vote_round,
+        "blind_chance": game.blind_chance,
+        "blind_round": game.blind_round,
         "votes_cast": len(voted_ids),
         "voters_total": len(players),
         "min_players": MIN_PLAYERS,

@@ -75,4 +75,4 @@ def room(request, code):
         return redirect("game:join", code=game.code)  # sin identidad, pasa por el nickname
     deck_options = [{"id": d.id, "name": d.name} for d in available_decks(request)]
     return render(request, "game/room.html",
-                  {"game": game, "player": player, "deck_options": deck_options})
+                {"game": game, "player": player, "deck_options": deck_options})

@@ -74,6 +74,12 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                     raise GameError("Carta inválida.")
                 await self.run(services.reroll_card, cid)
 
+            elif action == "reveal":
+                sid = content.get("submission")
+                if type(sid) is not int:
+                    raise GameError("Jugada inválida.")
+                await self.run(services.reveal_submission, sid)
+
             elif action == "pick_winner":
                 sid = content.get("submission")
                 if type(sid) is not int:
@@ -133,7 +139,7 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                 if not isinstance(values, dict):
                     raise GameError("Ajustes inválidos.")
                 clean = {}
-                for key in ("points_to_win", "rerolls", "golden", "golden_double", "vote_chance", "steals"):
+                for key in ("points_to_win", "rerolls", "golden", "golden_double", "vote_chance", "steals", "blind_chance"):
                     if key in values:
                         clean[key] = values[key]  # el tipo y el rango los valida el servicio
                 await self.run(services.update_settings, clean)
