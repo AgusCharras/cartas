@@ -21,6 +21,8 @@ POINTS_RANGE = (1, 20)    # puntos para ganar
 REROLLS_RANGE = (0, 10)   # cambios de carta por jugador
 GOLDEN_RANGE = (0, 5)     # cartas doradas por jugador (0 = no hay)
 VOTE_RANGE = (0, 100)     # % de rondas que se votan: 0 = siempre juez, 100 = siempre votación
+VERSUS_MIN_PLAYERS = 4   # con menos no queda nadie para votar el duelo
+MYOPIC_RANGE = (0, 5)     # veces por jugador que puede dejar miope a alguien
 STEALS_RANGE = (0, 5)     # robos de carta por jugador (0 = no se puede robar)
 MIN_GOLDEN_LEN = 3      # largo de la carta dorada que escribe el jugador
 MAX_GOLDEN_LEN = 140
@@ -135,7 +137,8 @@ def start_game(game_id, player_id):
     )
     # Los ajustes se eligen en el lobby: recién ahora se reparten a cada jugador
     game.players.update(rerolls_left=game.rerolls_per_player, golden_left=game.golden_per_player,
-                        steals_left=game.steals_per_player)
+                        steals_left=game.steals_per_player, myopic_left=game.myopic_per_player,
+                        myopic_round=0, myopic_by="")
     for p in players:
         _deal(game, p, HAND_SIZE)
 
@@ -163,11 +166,46 @@ def _start_round(game):
     black.save(update_fields=["status"])
     game.round_number += 1
     game.state = Game.PLAYING
-    game.players.update(locked_by=None, locked_at=None)
+    game.players.update(locked_by=None, locked_at=None, myopic_round=0, myopic_by="")
     game.blind_round = blind
     game.revealed = []
-    # Ronda de votación: no hay juez, todos juegan y todos votan (la de descarte siempre se vota)
-    game.vote_round = blind or random.randrange(100) < game.vote_chance
+    # Versus: duelos 1 contra 1 (solo si hay cantidad par de jugadores y nadie está por ganar)
+    players = list(game.players.order_by("joined_at", "id"))
+    versus = (not blind and _versus_possible(game, players)
+              and random.randrange(100) < game.versus_chance)
+    game.versus_round = versus
+    game.versus_index = 0
+    game.versus_results = []
+    game.versus_pairs = []
+    if versus:
+        ids = [p.id for p in players]
+        random.shuffle(ids)
+        game.versus_pairs = [[ids[i], ids[i + 1]] for i in range(0, len(ids), 2)]
+    # Ronda de votación: no hay juez, todos juegan y todos votan (la de descarte y los duelos siempre se votan)
+    game.vote_round = blind or versus or random.randrange(100) < game.vote_chance
+
+
+def _versus_possible(game, players):
+    """Cantidad par (mínimo 4) y nadie en match point: el duelo reparte varios puntos a la vez."""
+    if len(players) < VERSUS_MIN_PLAYERS or len(players) % 2:
+        return False
+    return all(p.score < game.points_to_win - 1 for p in players)
+
+
+def _duel_ids(game):
+    """Los dos jugadores del duelo que se está votando (lista vacía si no es una ronda de duelos)."""
+    if not game.versus_round or not 0 <= game.versus_index < len(game.versus_pairs):
+        return []
+    return list(game.versus_pairs[game.versus_index])
+
+
+def _duel_submissions(game):
+    """Jugadas visibles ahora: en un versus, solo las del duelo en curso."""
+    subs = _submissions(game)
+    if game.versus_round:
+        ids = _duel_ids(game)
+        subs = [x for x in subs if x[1].id in ids]
+    return subs
 
 
 @transaction.atomic
@@ -181,6 +219,8 @@ def play_cards(game_id, player_id, card_ids, golden=None):
         raise GameError("Sos el juez de esta ronda: te toca esperar.")
     if game.cards.filter(status=GameCard.PLAYED, player_id=player_id).exists():
         raise GameError("Ya jugaste en esta ronda.")
+    if game.versus_round and player_id not in _duel_ids(game):
+        raise GameError("Todavía no es tu duelo: esperá tu turno.")
     me = game.players.filter(pk=player_id).first()
     if me is not None and _lock_active(me):
         raise GameError("Te están robando una carta: esperá un momento.")
@@ -225,7 +265,7 @@ def play_cards(game_id, player_id, card_ids, golden=None):
         me.save(update_fields=["golden_left"])
 
     submitted = game.cards.filter(status=GameCard.PLAYED).values("player_id").distinct().count()
-    needed = game.players.count() - (0 if game.vote_round else 1)  # todos, o todos menos el juez
+    needed = 2 if game.versus_round else game.players.count() - (0 if game.vote_round else 1)  # el duelo, todos, o todos menos el juez
     if submitted >= needed:
         game.state = Game.JUDGING
         game.save(update_fields=["state"])
@@ -246,6 +286,8 @@ def reroll_card(game_id, player_id, card_id):
         raise GameError("Ya jugaste en esta ronda.")
     if _lock_active(player):
         raise GameError("Te están robando una carta: esperá un momento.")
+    if game.versus_round and player.id not in _duel_ids(game):
+        raise GameError("Todavía no es tu duelo: esperá tu turno.")
     if game.blind_round:
         raise GameError("En la ronda de descarte no hay cambios: jugá la carta que menos te importe.")
     if player.rerolls_left <= 0:
@@ -329,13 +371,18 @@ def _finish_round(game, winner, extra=None):
         **(extra or {}),
     }
 
+    _close_round(game, winner.score >= game.points_to_win)
+
+
+def _close_round(game, finished):
+    """Descarta lo jugado, repone las manos y arranca la ronda siguiente (o termina la partida)."""
     # Todo lo jugado en la ronda (y la negra) va al descarte
     game.cards.filter(status__in=[GameCard.PLAYED, GameCard.CURRENT]).update(
         status=GameCard.DISCARD, player=None, slot=None)
     game.cards.filter(card__isnull=True, status=GameCard.DISCARD).delete()  # las doradas no se reciclan
     game.votes.all().delete()
 
-    if winner.score >= game.points_to_win:
+    if finished:
         game.state = Game.FINISHED
         game.save()
         return
@@ -351,6 +398,68 @@ def _finish_round(game, winner, extra=None):
         game.judge = players[(idx + 1) % len(players)]
     _start_round(game)
     game.save()
+
+
+# ---------- versus (duelos 1 contra 1) ----------
+
+def _resolve_duel(game, walkover=None):
+    """Cierra el duelo en curso: gana quien tenga más votos (empate: se sortea) y suma su punto al toque.
+    `walkover`: id del que jugó cuando el otro no apareció (gana sin votos). Si era el último duelo,
+    termina la ronda; si no, empieza el siguiente (los dos del próximo duelo eligen carta)."""
+    a_id, b_id = _duel_ids(game)
+    counts = {a_id: 0, b_id: 0}
+    for v in game.votes.all():
+        if v.target_id in counts:
+            counts[v.target_id] += 1
+    tie = walkover is None and counts[a_id] == counts[b_id]
+    if walkover is not None:
+        win_id = walkover
+    else:
+        win_id = random.choice([a_id, b_id]) if tie else max(counts, key=counts.get)
+    lose_id = b_id if win_id == a_id else a_id
+
+    cards = {}
+    for gc in game.cards.filter(status=GameCard.PLAYED).select_related("card").order_by("slot"):
+        cards.setdefault(gc.player_id, []).append(gc)
+    names = {p.id: p.nickname for p in game.players.filter(pk__in=[a_id, b_id])}
+    win_cards, lose_cards = cards.get(win_id, []), cards.get(lose_id, [])
+
+    winner = game.players.get(pk=win_id)
+    gain = 2 if game.golden_double and any(c.is_golden for c in win_cards) else 1
+    winner.score += gain
+    winner.save(update_fields=["score"])
+
+    game.versus_results = [*game.versus_results, {
+        "winner": win_id, "winner_name": names[win_id], "loser_name": names[lose_id],
+        "votes": counts[win_id], "loser_votes": counts[lose_id], "tie": tie,
+        "walkover": walkover is not None, "points": gain,
+        "cards": [c.text for c in win_cards], "golden": [c.is_golden for c in win_cards],
+        "loser_cards": [c.text for c in lose_cards], "loser_golden": [c.is_golden for c in lose_cards],
+    }]
+    # Las cartas del duelo ya se leyeron: al descarte (las doradas se borran) para dejar lugar al siguiente
+    game.cards.filter(status=GameCard.PLAYED).update(status=GameCard.DISCARD, player=None, slot=None)
+    game.cards.filter(card__isnull=True, status=GameCard.DISCARD).delete()
+    game.votes.all().delete()
+    game.versus_index += 1
+    if game.versus_index >= len(game.versus_pairs):
+        _finish_versus(game)
+    else:
+        game.state = Game.PLAYING
+        game.players.update(locked_by=None, locked_at=None)
+        game.save(update_fields=["state", "versus_results", "versus_index"])
+
+
+def _finish_versus(game):
+    """Todos los duelos están resueltos (los puntos ya se sumaron uno por uno): arma el resumen y sigue."""
+    black = _current_black(game)
+    duels = [{k: v for k, v in r.items() if k != "winner"} for r in game.versus_results]
+    game.last_result = {
+        "mode": "versus", "round": game.round_number, "black": black.card.text,
+        "winner": ", ".join(d["winner_name"] for d in duels),
+        "duels": duels, "points": 1, "cards": [], "golden": [],
+    }
+    finished = game.players.filter(score__gte=game.points_to_win).exists()
+    _close_round(game, finished)
 
 
 # ---------- presencia ----------
@@ -409,6 +518,10 @@ def _restart_round(game, new_judge):
         status=GameCard.HAND, slot=None)
     game.cards.filter(status__in=[GameCard.PLAYED, GameCard.CURRENT]).update(
         status=GameCard.DISCARD, player=None, slot=None)
+    for p in game.players.all():  # por si ya se habían jugado duelos de un versus
+        missing = HAND_SIZE - game.cards.filter(status=GameCard.HAND, player=p).count()
+        if missing > 0:
+            _deal(game, p, missing)
     game.judge = new_judge
     game.round_number -= 1  # la ronda cancelada no cuenta
     _start_round(game)
@@ -455,6 +568,8 @@ def remove_player(game_id, actor_id, target_id):
                 game.judge = next_judge
         elif was_judge and not game.vote_round:
             _restart_round(game, next_judge)
+        elif game.versus_round:  # cambia la cantidad de jugadores: los duelos se arman de nuevo
+            _restart_round(game, next_judge if was_judge else game.judge)
         else:
             if was_judge:  # ronda de votación: no había juez, solo se corre el turno
                 game.judge = next_judge
@@ -494,6 +609,12 @@ def force_judging(game_id, player_id):
     if game.state != Game.PLAYING:
         raise GameError("No hay una ronda esperando jugadas.")
     submitted = game.cards.filter(status=GameCard.PLAYED).values("player_id").distinct().count()
+    if game.versus_round:  # solo uno de los dos jugó: gana el duelo por abandono (sin votación)
+        if submitted < 1:
+            raise GameError("Todavía no jugó nadie en este duelo.")
+        winner_id = game.cards.filter(status=GameCard.PLAYED).values_list("player_id", flat=True).first()
+        _resolve_duel(game, walkover=winner_id)
+        return
     if game.vote_round and submitted < 2:
         raise GameError("Hacen falta al menos 2 jugadas para poder votar.")
     if submitted < 1:
@@ -531,14 +652,17 @@ def vote(game_id, player_id, token):
     if me is None:
         raise GameError("Ya no estás en esta sala.")
 
-    target = next((author for t, author, _cards in _submissions(game) if t == token), None)
+    if game.versus_round and me.id in _duel_ids(game):
+        raise GameError("Estás en este duelo: votan los demás.")
+    target = next((author for t, author, _cards in _duel_submissions(game) if t == token), None)
     if target is None:
         raise GameError("Jugada inválida.")
     if target.id == me.id:
         raise GameError("No podés votar tu propia carta.")
 
     Vote.objects.update_or_create(game=game, voter=me, defaults={"target": target})
-    if game.votes.count() >= game.players.count():  # votaron todos
+    voters = game.players.count() - (2 if game.versus_round else 0)
+    if game.votes.count() >= voters:  # votaron todos los que pueden votar
         _resolve_vote(game)
 
 
@@ -556,13 +680,20 @@ def close_vote(game_id, player_id):
 
 def _resolve_vote(game):
     """Gana la jugada con más votos; si hay empate, se sortea entre las empatadas."""
+    if game.versus_round:
+        _resolve_duel(game)
+        return
     counts = {}
     for v in game.votes.all():
         counts[v.target_id] = counts.get(v.target_id, 0) + 1
     top = max(counts.values())
     tied = [pid for pid, n in counts.items() if n == top]
     winner = game.players.get(pk=random.choice(tied))
-    _finish_round(game, winner, {"mode": "vote", "votes": top, "tie": len(tied) > 1})
+    extra = {"mode": "vote", "votes": top, "tie": len(tied) > 1}
+    if len(tied) > 1:  # para animar el sorteo
+        extra["tied"] = list(game.players.filter(pk__in=tied).order_by("joined_at", "id")
+                             .values_list("nickname", flat=True))
+    _finish_round(game, winner, extra)
 
 
 def _after_leave_in_vote(game, n_players):
@@ -623,6 +754,8 @@ def _check_steal(game, player_id, target_id):
         raise GameError("Ya jugaste en esta ronda.")
     if target_id == thief.id:
         raise GameError("No podés robarte a vos mismo.")
+    if game.versus_round and not (thief.id in _duel_ids(game) and target_id in _duel_ids(game)):
+        raise GameError("En el versus solo se le puede robar al rival del duelo.")
     target = game.players.filter(pk=target_id).first()
     if target is None:
         raise GameError("Ese jugador ya no está en la sala.")
@@ -687,6 +820,48 @@ def steal_card(game_id, player_id, target_id, slot):
             "card_id": stolen.id, "card_text": stolen.text}
 
 
+# ---------- miopes: dejar a otro jugador con la mano borrosa y mezclada ----------
+
+def _myopic_now(game, player):
+    return game.state == Game.PLAYING and game.round_number > 0 and player.myopic_round == game.round_number
+
+
+@transaction.atomic
+def cast_myopic(game_id, player_id, target_id):
+    """Deja miope a `target` por esta ronda (hasta que juegue): ve su mano borrosa y en otro orden.
+    Se puede usar solo antes de que juegue, una vez por víctima y por ronda. Devuelve los datos para avisar."""
+    game = _lock(game_id)
+    if game.state != Game.PLAYING:
+        raise GameError("Solo se puede dejar miope a alguien mientras se eligen las cartas.")
+    if game.blind_round:
+        raise GameError("En la ronda de descarte no se puede dejar miope a nadie.")
+    me = game.players.filter(pk=player_id).first()  # se lee DESPUÉS del lock
+    if me is None:
+        raise GameError("Ya no estás en esta sala.")
+    if me.myopic_left <= 0:
+        raise GameError("No te quedan miopes." if game.myopic_per_player
+                        else "En esta partida no se puede dejar miope a nadie.")
+    if target_id == me.id:
+        raise GameError("No podés dejarte miope a vos mismo.")
+    target = game.players.filter(pk=target_id).first()
+    if target is None:
+        raise GameError("Ese jugador ya no está en la sala.")
+    if game.versus_round and not (me.id in _duel_ids(game) and target.id in _duel_ids(game)):
+        raise GameError("En el versus solo se le puede nublar la vista al rival del duelo.")
+    if not game.vote_round and target.id == game.judge_id:
+        raise GameError("El juez no elige cartas: no tiene sentido nublarle la vista.")
+    if game.cards.filter(status=GameCard.PLAYED, player=target).exists():
+        raise GameError(f"{target.nickname} ya jugó: llegaste tarde.")
+    if _myopic_now(game, target):
+        raise GameError(f"{target.nickname} ya está miope en esta ronda.")
+
+    me.myopic_left -= 1
+    me.save(update_fields=["myopic_left"])
+    target.myopic_round, target.myopic_by = game.round_number, me.nickname
+    target.save(update_fields=["myopic_round", "myopic_by"])
+    return {"by": me.nickname, "victim": target.nickname}
+
+
 # ---------- ajustes de la partida (solo en el lobby) ----------
 
 @transaction.atomic
@@ -709,10 +884,14 @@ def update_settings(game_id, player_id, values):
         game.rerolls_per_player = in_range("Cambios de carta", values["rerolls"], REROLLS_RANGE)
     if "golden" in values:
         game.golden_per_player = in_range("Cartas doradas", values["golden"], GOLDEN_RANGE)
+    if "myopic" in values:
+        game.myopic_per_player = in_range("Miopes", values["myopic"], MYOPIC_RANGE)
     if "steals" in values:
         game.steals_per_player = in_range("Robos de carta", values["steals"], STEALS_RANGE)
     if "blind_chance" in values:
         game.blind_chance = in_range("Probabilidad de ronda de descarte", values["blind_chance"], VOTE_RANGE)
+    if "versus_chance" in values:
+        game.versus_chance = in_range("Probabilidad de versus", values["versus_chance"], VOTE_RANGE)
     if "vote_chance" in values:
         game.vote_chance = in_range("Probabilidad de votación", values["vote_chance"], VOTE_RANGE)
     if "golden_double" in values:
@@ -772,6 +951,22 @@ def chat_author(game_id, player_id):
 
 # ---------- lo que ve cada jugador ----------
 
+def _versus_view(game, players, duel_ids):
+    """Quién enfrenta a quién y cómo van los duelos (los resultados son públicos: el duelo ya se resolvió)."""
+    nick = {p.id: p.nickname for p in players}
+    return {
+        "pairs": [[nick.get(a), nick.get(b)] for a, b in game.versus_pairs],
+        "index": game.versus_index,
+        "duel": [nick.get(i) for i in duel_ids] if duel_ids else None,
+        "done": [{"winner": r["winner_name"], "loser": r["loser_name"],
+                  "winner_name": r["winner_name"], "loser_name": r["loser_name"], "votes": r["votes"],
+                  "loser_votes": r["loser_votes"], "tie": r["tie"], "walkover": r.get("walkover", False),
+                  "points": r.get("points", 1), "cards": r["cards"],
+                  "golden": r["golden"], "loser_cards": r["loser_cards"], "loser_golden": r["loser_golden"]}
+                 for r in game.versus_results],
+    }
+
+
 def snapshot(game_id, player_id):
     """Estado PERSONALIZADO para un jugador. Devuelve None si ya no pertenece a la partida.
     Nunca incluye tokens ni manos ajenas."""
@@ -799,6 +994,11 @@ def snapshot(game_id, player_id):
         hand = [{"id": gc.id, "text": gc.text}
                 for gc in game.cards.filter(status=GameCard.HAND, player_id=player_id)
                 .select_related("card").order_by("id")]
+        if _myopic_now(game, me):  # miope: las cartas llegan en otro orden (estable durante la ronda)
+            def mix(card):
+                msg = f"myopic:{game.id}:{game.round_number}:{me.id}:{card['id']}".encode()
+                return hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
+            hand.sort(key=mix)
 
     # Cuántas cartas tiene cada uno en la mano (se muestran boca abajo al robar; nunca cuáles son)
     hand_counts = {}
@@ -812,8 +1012,9 @@ def snapshot(game_id, player_id):
     submissions = []
     my_vote = None
     voted_ids = set()
+    duel_ids = _duel_ids(game) if in_round else []
     if game.state == Game.JUDGING:
-        subs = _submissions(game)
+        subs = _duel_submissions(game)
         # El id es un token opaco y el orden sale del mismo token: ni uno ni otro delatan
         # quién jugó cada respuesta (la posición en el mazo sí seguía el orden de los jugadores).
         for token, author, cards in subs:
@@ -854,12 +1055,16 @@ def snapshot(game_id, player_id):
         "golden_per_player": game.golden_per_player,
         "golden_double": game.golden_double,
         "steals_per_player": game.steals_per_player,
+        "myopic_per_player": game.myopic_per_player,
         "vote_chance": game.vote_chance,
         "vote_round": game.vote_round,
         "blind_chance": game.blind_chance,
         "blind_round": game.blind_round,
         "votes_cast": len(voted_ids),
-        "voters_total": len(players),
+        "voters_total": len(players) - len(duel_ids),
+        "versus_chance": game.versus_chance,
+        "versus_round": game.versus_round,
+        "versus": _versus_view(game, players, duel_ids) if game.versus_round and in_round else None,
         "min_players": MIN_PLAYERS,
         "me": {
             "id": me.id,
@@ -872,6 +1077,9 @@ def snapshot(game_id, player_id):
             "rerolls_left": me.rerolls_left,
             "golden_left": me.golden_left,
             "steals_left": me.steals_left,
+            "myopic_left": me.myopic_left,
+            "myopic": _myopic_now(game, me),
+            "myopic_by": me.myopic_by if _myopic_now(game, me) else None,
             # Si alguien me está robando ahora: quién y cuántos segundos queda bloqueado
             "robbed_by": (next((p.nickname for p in players if p.id == me.locked_by_id), None)
                           if game.state == Game.PLAYING and _lock_active(me, now) else None),
@@ -883,6 +1091,8 @@ def snapshot(game_id, player_id):
             {"id": p.id, "nickname": p.nickname, "is_host": p.is_host, "score": p.score,
              "is_judge": p.id == judge_id, "has_played": p.id in played_ids,
              "has_voted": p.id in voted_ids,
+             "in_duel": p.id in duel_ids,
+             "myopic": _myopic_now(game, p),
              "hand_count": hand_counts.get(p.id, 0),
              "robbed": game.round_number > 0 and p.robbed_round == game.round_number,
              "being_robbed": game.state == Game.PLAYING and _lock_active(p, now),

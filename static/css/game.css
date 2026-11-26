@@ -805,3 +805,144 @@ body.noscroll { overflow: hidden; }
 /* El selector de robo con los colores del juego (antes tenía un azul que no pegaba) */
 .stealbox { background: var(--panel); border: 2px solid #ff4d5a;
   box-shadow: 0 0 40px rgba(255, 77, 90, .25), 0 20px 50px rgba(0, 0, 0, .6); }
+
+/* =====================================================================
+   Sala de espera: modo de juego + tarjetas de habilidades
+   ===================================================================== */
+.lobby { display: flex; flex-direction: column; gap: 1rem; }
+
+/* Modo de juego */
+.modepanel { background: var(--panel); border: 2px solid var(--accent); border-radius: 22px; padding: 1.1rem 1.3rem;
+             box-shadow: 0 0 30px rgba(111, 211, 154, .08); }
+.modehead { display: flex; align-items: center; gap: 1.2rem; flex-wrap: wrap; }
+.modetitle { font-weight: 900; letter-spacing: .08em; font-size: .95rem; color: var(--accent); }
+.segmented { display: flex; flex: 1; min-width: 260px; gap: .2rem; padding: .3rem; background: #050505;
+             border: 2px solid #eee; border-radius: 999px; }
+.seg { flex: 1; background: transparent; color: #cfcfd6; border-radius: 999px; padding: .55rem .8rem; font-weight: 800;
+       transition: background .2s, color .2s; }
+.seg:hover:not(:disabled):not(.on) { background: rgba(255, 255, 255, .08); filter: none; }
+.seg.on { background: var(--accent); color: var(--accent-ink); }
+.seg:disabled { opacity: 1; cursor: default; }
+.seg:disabled:not(.on) { opacity: .55; }
+.modedesc { margin: .8rem 0 0; color: #d6d6dc; min-height: 2.6em; }
+.modeextra { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+             margin-top: .7rem; padding-top: .7rem; border-top: 1px dashed var(--border); font-weight: 700; }
+
+/* Tarjetas de habilidades */
+.skills { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .9rem; }
+.skill { position: relative; display: flex; flex-direction: column; align-items: center; gap: .45rem;
+         background: var(--panel); border: 2px solid rgba(111, 211, 154, .6); border-radius: 22px;
+         padding: 1rem .8rem .9rem; text-align: center; transition: border-color .2s, transform .15s, opacity .2s; }
+.skill:hover { transform: translateY(-2px); border-color: var(--accent); }
+.skill.off { border-color: var(--border); }
+.skill.off .skillicon { filter: grayscale(1); opacity: .55; }
+.skill.soon { border-style: dashed; opacity: .75; }
+.skillicon { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center;
+             background: radial-gradient(circle at 35% 30%, #2f3a34, #1a1f1c); border: 2px solid var(--border); overflow: hidden; }
+.skillicon img { width: 100%; height: 100%; object-fit: contain; }
+.skillemoji { font-size: 2.2rem; line-height: 1; }
+.skilllabel { font-weight: 800; }
+.soontag { color: var(--muted); font-size: .8rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+
+.infobtn { position: absolute; top: .55rem; right: .6rem; width: 26px; height: 26px; padding: 0; border-radius: 50%;
+           background: transparent; color: var(--muted); border: 2px solid var(--muted); font-weight: 900; font-size: .85rem; line-height: 1; z-index: 6; }
+.infobtn:hover { color: var(--accent); border-color: var(--accent); filter: none; }
+.tip { position: absolute; inset: 0; z-index: 5; background: rgba(14, 14, 17, .97); border-radius: 20px; padding: 2.4rem .9rem .8rem;
+       text-align: left; font-size: .82rem; overflow: auto; animation: revealfade .18s ease-out both; }
+.tip b { color: var(--accent); }
+.tip p { margin: .3rem 0 0; color: #d6d6dc; }
+
+.tristep { display: flex; align-items: center; justify-content: center; gap: .6rem; }
+.tri { background: transparent; color: var(--accent); padding: 0 .25rem; font-size: 1.5rem; line-height: 1; border-radius: 8px; }
+.tri:hover:not(:disabled) { transform: scale(1.2); filter: none; }
+.trivalue { min-width: 3rem; text-align: center; font-weight: 900; font-size: 1.4rem; color: var(--text); }
+.skill.off .trivalue { color: var(--muted); }
+.chips.mini { margin: 0; justify-content: center; }
+.dbl2 { display: flex; align-items: center; gap: .2rem; font-size: .8rem; font-weight: 700; cursor: pointer; }
+.dbl2.dim { opacity: .45; cursor: default; }
+
+/* Mazos y botones de abajo */
+.deckpanel { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 1rem 1.2rem; }
+.deckpanel h3 { margin: 0 0 .4rem; }
+.lobbyactions { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+.lobbybtn { background: #f2f0fa; color: #14301f; border-radius: 16px; padding: .8rem 2.2rem; font-size: 1.1rem; font-weight: 900;
+            letter-spacing: .05em; text-transform: uppercase; box-shadow: 0 4px 0 #b9b4c9; }
+.lobbybtn.go { background: var(--accent); box-shadow: 0 4px 0 #3f8f63; }
+.lobbybtn:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 #7d7791; }
+.lobbyhint { text-align: center; margin: 0; }
+
+@media (max-width: 720px) {
+  .skills { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+  .skill { padding: .9rem .5rem .8rem; border-radius: 18px; }
+  .skillicon { width: 58px; height: 58px; }
+  .skillemoji { font-size: 1.8rem; }
+  .modehead { gap: .7rem; }
+  .segmented { min-width: 100%; }
+  .lobbybtn { padding: .7rem 1.4rem; font-size: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) { .skill, .tip, .seg { transition: none; animation: none; } }
+
+
+/* ---------- versus (duelos 1 contra 1) ---------- */
+.votebanner.versus { background: linear-gradient(90deg, rgba(255, 107, 107, .16), rgba(245, 197, 66, .14)); border-color: #ff6b6b; }
+.duelstrip { display: flex; flex-wrap: wrap; gap: .45rem; justify-content: center; margin: .2rem 0 .1rem; }
+.duelchip { display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .7rem; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--border); font-size: .85rem; color: var(--muted); }
+.duelchip b { font-size: .8rem; }
+.duelchip small { font-weight: 800; color: var(--accent); }
+.duelchip.now { color: var(--text, #fff); border-color: #ff6b6b; box-shadow: 0 0 0 2px rgba(255, 107, 107, .25);
+  animation: duelpulse 1.6s ease-in-out infinite; }
+.duelchip.done .dn { opacity: .55; }
+.duelchip.done .dn.win { opacity: 1; color: var(--accent); font-weight: 800; }
+@keyframes duelpulse { 50% { box-shadow: 0 0 0 5px rgba(255, 107, 107, .12); } }
+
+.skillnote { font-size: .72rem; color: #f5c542; text-align: center; line-height: 1.2; }
+
+.versusreveal { flex-wrap: wrap; gap: 1.2rem; max-height: 100%; overflow: auto; }
+.duels { display: flex; flex-direction: column; gap: .7rem; align-items: stretch; max-width: min(640px, 92vw); }
+.duelrow { background: rgba(0, 0, 0, .35); border: 1px solid var(--border); border-radius: 16px; padding: .6rem .8rem; }
+.duelhead { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.duelhead .avatar { width: 30px; height: 30px; font-size: 1rem; }
+.duelhead .dscore { color: var(--accent); font-weight: 800; }
+.duelhead .dlose { color: var(--muted); font-size: .85rem; }
+.duelcards { display: flex; gap: .4rem; margin-top: .5rem; flex-wrap: wrap; }
+.duelcards .c.mini { --cw: clamp(110px, 24vw, 170px); aspect-ratio: auto; min-height: 64px; font-size: .7rem; padding: .45rem .5rem; }
+@media (prefers-reduced-motion: reduce) { .duelchip.now { animation: none; } }
+
+
+/* sorteo animado */
+.lotto { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1.4rem; background: rgba(8, 8, 10, .9); transition: opacity .45s; }
+.lotto.out { opacity: 0; }
+.lottotitle { font-size: clamp(1.5rem, 4.5vw, 2.6rem); font-weight: 900; }
+.lottorow { display: flex; gap: .9rem; flex-wrap: wrap; justify-content: center; max-width: 92vw; }
+.lottochip { display: flex; flex-direction: column; align-items: center; gap: .45rem; padding: .9rem 1.2rem; border-radius: 18px;
+  border: 2px solid var(--border); background: var(--panel); opacity: .5; transform: scale(.94); font-weight: 800;
+  transition: transform .08s, opacity .08s, border-color .08s, box-shadow .08s; }
+.lottochip .avatar { width: 58px; height: 58px; font-size: 2rem; }
+.lottochip.on { opacity: 1; border-color: #f5c542; transform: scale(1.1); box-shadow: 0 0 24px rgba(245, 197, 66, .55); }
+.lottochip.won { opacity: 1; border-color: var(--accent); box-shadow: 0 0 40px rgba(111, 211, 154, .75); animation: lottowin .6s ease both; }
+.lottores { min-height: 2.4rem; font-size: clamp(1.5rem, 4.5vw, 2.4rem); font-weight: 900; color: var(--accent); }
+@keyframes lottowin { 0% { transform: scale(1); } 40% { transform: scale(1.32); } 100% { transform: scale(1.14); } }
+@media (prefers-reduced-motion: reduce) { .lottochip.won { animation: none; } }
+
+/* resultado de un duelo */
+.versusreveal { align-items: center; }
+.dsides { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+.dside { display: flex; flex-direction: column; gap: .5rem; align-items: center; }
+.dsname { font-weight: 900; }
+.dside.win .dsname { color: var(--accent); }
+.dside.lose { opacity: .55; }
+.dside .duelcards { justify-content: center; margin-top: 0; }
+.dside .duelcards .c.mini { --cw: clamp(120px, 15vw, 180px); }
+
+
+/* miopes */
+.btn-myopic { --c: #b388ff; }
+.myopicbox h3 { color: #b388ff; }
+.myopicalert { background: rgba(40, 20, 80, .9); }
+.myopicbanner { text-align: center; font-weight: 700; padding: .55rem 1rem; border-radius: 14px; font-size: .9rem;
+  background: rgba(179, 136, 255, .12); border: 1px solid #b388ff; }
+/* texto borroso: se pinta transparente con sombra difusa (así se desenfoca solo el texto, no la carta) */
+.fan.myopic .c.fc.white:not(.gold) { color: transparent; text-shadow: 0 0 10px #000, 0 0 5px rgba(0, 0, 0, .8); transition: text-shadow .25s; }
+.fan.myopic .c.fc.white:not(.gold):hover, .fan.myopic .c.fc.white.selected { text-shadow: 0 0 5px rgba(0, 0, 0, .85); }

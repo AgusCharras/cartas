@@ -41,6 +41,14 @@ class Game(models.Model):
     # Ronda de descarte: probabilidad (%) de que una ronda sea sorpresa (la negra se revela después de jugar)
     blind_chance = models.PositiveSmallIntegerField(default=0)
     blind_round = models.BooleanField(default=False)  # la ronda actual es de descarte (siempre se decide votando)
+    # Miopes: veces por jugador que puede dejar miope (mano borrosa y mezclada) a otro jugador en una ronda
+    myopic_per_player = models.PositiveSmallIntegerField(default=0)
+    # Versus: probabilidad (%) de que una ronda sea de duelos 1 contra 1 (solo con cantidad par de jugadores)
+    versus_chance = models.PositiveSmallIntegerField(default=0)
+    versus_round = models.BooleanField(default=False)   # la ronda actual es de duelos
+    versus_pairs = models.JSONField(default=list, blank=True)    # [[id_a, id_b], ...] en orden de duelo
+    versus_index = models.PositiveSmallIntegerField(default=0)   # duelo que se está votando
+    versus_results = models.JSONField(default=list, blank=True)  # duelos ya resueltos de esta ronda
     # Rondas con juez: jugadas (por su token opaco) que el juez ya dio vuelta; el resto sigue boca abajo
     revealed = models.JSONField(default=list, blank=True)
     vote_round = models.BooleanField(default=False)  # la ronda actual se decide votando (no hay juez)
@@ -71,6 +79,9 @@ class Player(models.Model):
     locked_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     locked_at = models.DateTimeField(null=True, blank=True)
     robbed_round = models.PositiveSmallIntegerField(default=0)  # ronda en la que le robaron (solo 1 robo por ronda)
+    myopic_left = models.PositiveSmallIntegerField(default=0)   # veces que todavía puede dejar miope a alguien
+    myopic_round = models.PositiveSmallIntegerField(default=0)  # ronda en la que lo dejaron miope (0 = ninguna)
+    myopic_by = models.CharField(max_length=24, blank=True)     # quién lo dejó miope
 
     class Meta:
         constraints = [

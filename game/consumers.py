@@ -125,6 +125,15 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                     "type": "notice.message",
                     "text": f"🦹 {info['thief']} le robó una carta a {info['victim']}"})
 
+            elif action == "myopic":
+                target = content.get("player")
+                if type(target) is not int:
+                    raise GameError("Jugador inválido.")
+                info = await self.run(services.cast_myopic, target)
+                await self.channel_layer.group_send(self.group, {
+                    "type": "notice.message",
+                    "text": f"👓 {info['by']} le nubló la vista a {info['victim']}"})
+
             elif action == "vote":
                 token = content.get("submission")
                 if type(token) is not int:
@@ -139,7 +148,7 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                 if not isinstance(values, dict):
                     raise GameError("Ajustes inválidos.")
                 clean = {}
-                for key in ("points_to_win", "rerolls", "golden", "golden_double", "vote_chance", "steals", "blind_chance"):
+                for key in ("points_to_win", "rerolls", "golden", "golden_double", "vote_chance", "steals", "blind_chance", "versus_chance", "myopic"):
                     if key in values:
                         clean[key] = values[key]  # el tipo y el rango los valida el servicio
                 await self.run(services.update_settings, clean)

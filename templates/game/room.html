@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 {% block wrapclass %}wide{% endblock %}
 {% block content %}
 
@@ -7,13 +8,13 @@
   <div class="pill accent" id="round-pill">Lobby</div>
   <div class="pill" id="goal-pill" hidden></div>
   <div class="pill" id="status">Conectando…</div>
-  <button id="copy" class="ghostbtn">Copiar link de invitación</button>
 </div>
 
 <div id="toast" class="toast" hidden></div>
 <div id="reveal" class="reveal" role="dialog" aria-live="polite" hidden></div>
 <div id="confirm" class="confirmwrap" role="dialog" aria-modal="true" hidden></div>
 <div id="robbed" class="reveal robbed" role="alert" hidden></div>
+<div id="myopic" class="reveal robbed myopicalert" role="alert" hidden></div>
 <div id="steal" class="reveal stealmodal" role="dialog" hidden></div>
 <div id="podium" class="reveal podium" role="dialog" aria-live="polite" hidden></div>
 
@@ -52,16 +53,6 @@
   let ws = null, state = null, selected = [], selectedSub = null, toastTimer = null, pingTimer = null;
   let voteBannerRound = null;  // ronda en la que ya se animó el aviso de votación
   let codeDraft = "", selectDraft = "";  // para no perder lo escrito cuando llega un refresco
-
-  $("copy").onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(inviteLink);
-      $("copy").textContent = "¡Copiado!";
-      setTimeout(() => { $("copy").textContent = "Copiar link de invitación"; }, 2000);
-    } catch {
-      prompt("Copiá el link:", inviteLink);
-    }
-  };
 
   function send(obj) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -367,6 +358,8 @@
   function closeReveal() {
     clearInterval(revealTimer);
     revealTimer = null;
+    clearTimeout(lottoTimer);
+    lottoTimer = null;
     const box = $("reveal");
     if (box.hidden) return;
     box.hidden = true;
@@ -382,13 +375,60 @@
     if (e.key === "Escape") { closePodium(); closeReveal(); }
   });
 
-  function showReveal(l, finished) {
-    closeReveal();
-    const box = $("reveal");
+  // ---- sorteo animado: un foco salta entre los empatados, frena de a poco y cae en el ganador ----
+  let lottoTimer = null;
+
+  function runLottery(box, names, winner, done) {
+    const wrap = node("div", undefined, "lotto");
+    wrap.append(node("div", "🎲 ¡Empate! Sorteo…", "lottotitle"));
+    const row = node("div", undefined, "lottorow");
+    const chips = names.map((n) => {
+      const c = node("div", undefined, "lottochip");
+      c.append(avatarNode(n), node("span", n));
+      row.append(c);
+      return c;
+    });
+    const res = node("div", "", "lottores");
+    wrap.append(row, res);
+    box.append(wrap);
+    const n = names.length;
+    const win = Math.max(0, names.indexOf(winner));
+    const steps = Math.ceil(16 / n) * n + win;  // da varias vueltas y termina justo en el ganador
+    let i = 0;
+    const tick = () => {
+      chips.forEach((c, k) => c.classList.toggle("on", k === i % n));
+      if (i >= steps) {
+        chips[win].classList.remove("on");
+        chips[win].classList.add("won");
+        res.textContent = "¡" + winner + "!";
+        lottoTimer = setTimeout(() => {
+          wrap.classList.add("out");
+          lottoTimer = setTimeout(() => { wrap.remove(); done(); }, 450);
+        }, 1100);
+        return;
+      }
+      const delay = 70 + Math.pow(i / steps, 3) * 420;  // arranca rápido y se va frenando
+      i += 1;
+      lottoTimer = setTimeout(tick, delay);
+    };
+    tick();
+  }
+
+  function startCountdown(count, label, seconds = REVEAL_SECONDS) {
+    let left = seconds;
+    const paint = () => { count.textContent = `${label} ${left}…`; };
+    paint();
+    revealTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) closeReveal();
+      else paint();
+    }, 1000);
+  }
+
+  function revealBackdrop(box) {
     box.hidden = false;
     box.replaceChildren();
     box.onclick = closeReveal;  // tocar la pantalla la saltea
-
     // Fondo: cartas fantasma y destellos
     [[4, 12, -18], [20, 70, 12], [44, 6, 8], [62, 78, -10], [80, 10, 20], [90, 62, -14]].forEach(([x, y, r]) => {
       const g = node("div", undefined, "ghostcard");
@@ -405,43 +445,86 @@
       sp.style.animationDelay = (i * 0.35) + "s";
       box.append(sp);
     });
+  }
 
-    const stage = node("div", undefined, "reveal-stage");
-    stage.append(cardNode(l.black, "black"));
+  // Resultado de un duelo del versus: las dos jugadas, el marcador y quién ganó
+  function showDuelReveal(d, black, finished) {
+    closeReveal();
+    const box = $("reveal");
+    revealBackdrop(box);
+    const begin = () => {
+      const stage = node("div", undefined, "reveal-stage versusreveal");
+      stage.append(cardNode(black, "black"));
+      const isMe = !!state && state.me.nickname === d.winner_name;
+      const center = node("div", undefined, "reveal-center");
+      const badge = node("div", undefined, "badge");
+      badge.append(avatarNode(d.winner_name));
+      const txt = node("div");
+      txt.append(node("div", "⚔️ Ganó el duelo:", "badge-label"));
+      txt.append(node("div", isMe ? d.winner_name + " (vos) 🎉" : d.winner_name, "badge-name"));
+      txt.append(node("div", d.walkover ? `${d.loser_name} no jugó` : `🗳️ ${d.votes}–${d.loser_votes}` + (d.tie ? " · desempate por sorteo 🎲" : ""), "badge-votes"));
+      if (d.points > 1) txt.append(node("div", "⭐ ¡Carta dorada: vale " + d.points + " puntos!", "badge-bonus"));
+      badge.append(txt);
+      const count = node("div", undefined, "countpill");
+      center.append(node("div", "👑", "crown"), badge, count);
+      const sides = node("div", undefined, "dsides");
+      const side = (name, cards, golds, win) => {
+        const el = node("div", undefined, "dside " + (win ? "win" : "lose"));
+        el.append(node("div", (win ? "👑 " : "") + name, "dsname"));
+        const row = node("div", undefined, "duelcards");
+        cards.forEach((t, i) => row.append(cardNode(t, "white mini" + (golds[i] ? " gold" : ""))));
+        el.append(row);
+        return el;
+      };
+      sides.append(side(d.winner_name, d.cards, d.golden || [], true));
+      if (d.loser_cards && d.loser_cards.length) sides.append(side(d.loser_name, d.loser_cards, d.loser_golden || [], false));
+      stage.append(center, sides);
+      box.append(stage);
+      startCountdown(count, finished ? "Resultados en" : "Sigue en");
+    };
+    if (d.tie) runLottery(box, [d.winner_name, d.loser_name].sort(() => 0.5 - Math.random()), d.winner_name, begin);
+    else begin();
+  }
 
-    // Centro: corona, quién ganó y cuenta regresiva
-    const isMe = !!state && state.me.nickname === l.winner;
-    const center = node("div", undefined, "reveal-center");
-    const badge = node("div", undefined, "badge");
-    badge.append(avatarNode(l.winner));
-    const txt = node("div");
-    txt.append(node("div", l.mode === "vote" ? "La jugada más votada fue de:" : "La carta fue elegida por:", "badge-label"));
-    txt.append(node("div", isMe ? l.winner + " (vos) 🎉" : l.winner, "badge-name"));
-    if (l.mode === "vote") {
-      txt.append(node("div", "🗳️ " + l.votes + (l.votes === 1 ? " voto" : " votos") + (l.tie ? " · desempate por sorteo 🎲" : ""), "badge-votes"));
+  function showReveal(l, finished) {
+    if (l.mode === "versus") {
+      showDuelReveal(l.duels[l.duels.length - 1], l.black, finished);
+      return;
     }
-    if (l.points > 1) txt.append(node("div", "⭐ ¡Carta dorada: vale " + l.points + " puntos!", "badge-bonus"));
-    badge.append(txt);
-    const count = node("div", undefined, "countpill");
-    center.append(node("div", "👑", "crown"), badge, count);
-    stage.append(center);
+    closeReveal();
+    const box = $("reveal");
+    revealBackdrop(box);
+    const begin = () => {
+      const stage = node("div", undefined, "reveal-stage");
+      stage.append(cardNode(l.black, "black"));
 
-    // Respuesta ganadora (acá sí se revela si era dorada: el juez ya eligió)
-    const whites = node("div", undefined, "reveal-whites");
-    l.cards.forEach((t, i) =>
-      whites.append(cardNode(t, "white" + (l.golden && l.golden[i] ? " gold" : ""))));
-    stage.append(whites);
-    box.append(stage);
+      // Centro: corona, quién ganó y cuenta regresiva
+      const isMe = !!state && state.me.nickname === l.winner;
+      const center = node("div", undefined, "reveal-center");
+      const badge = node("div", undefined, "badge");
+      badge.append(avatarNode(l.winner));
+      const txt = node("div");
+      txt.append(node("div", l.mode === "vote" ? "La jugada más votada fue de:" : "La carta fue elegida por:", "badge-label"));
+      txt.append(node("div", isMe ? l.winner + " (vos) 🎉" : l.winner, "badge-name"));
+      if (l.mode === "vote") {
+        txt.append(node("div", "🗳️ " + l.votes + (l.votes === 1 ? " voto" : " votos") + (l.tie ? " · desempate por sorteo 🎲" : ""), "badge-votes"));
+      }
+      if (l.points > 1) txt.append(node("div", "⭐ ¡Carta dorada: vale " + l.points + " puntos!", "badge-bonus"));
+      badge.append(txt);
+      const count = node("div", undefined, "countpill");
+      center.append(node("div", "👑", "crown"), badge, count);
+      stage.append(center);
 
-    let left = REVEAL_SECONDS;
-    const label = finished ? "Resultados en" : "Siguiente ronda en";
-    const paint = () => { count.textContent = `${label} ${left}…`; };
-    paint();
-    revealTimer = setInterval(() => {
-      left -= 1;
-      if (left <= 0) closeReveal();
-      else paint();
-    }, 1000);
+      // Respuesta ganadora (acá sí se revela si era dorada: el juez ya eligió)
+      const whites = node("div", undefined, "reveal-whites");
+      l.cards.forEach((t, i) =>
+        whites.append(cardNode(t, "white" + (l.golden && l.golden[i] ? " gold" : ""))));
+      stage.append(whites);
+      box.append(stage);
+      startCountdown(count, finished ? "Resultados en" : "Siguiente ronda en");
+    };
+    if (l.tie && l.tied && l.tied.length > 1) runLottery(box, l.tied, l.winner, begin);
+    else begin();
   }
 
   // ---- podio final ----
@@ -544,12 +627,14 @@
     r.classList.toggle("min", resultMin);
     r.replaceChildren();
     if (resultMin) {
-      const chip = node("button", `🏆 Ronda ${l.round}: ganó ${l.winner}`, "reschip");
+      const chip = node("button", `🏆 Ronda ${l.round}: ${l.mode === "versus" ? "ganaron" : "ganó"} ${l.winner}`, "reschip");
       chip.title = "Mostrar el detalle del último ganador";
       chip.onclick = () => setResultMin(false);
       r.append(chip);
     } else {
-      const txt = `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`
+      const txt = l.mode === "versus"
+        ? `⚔️ Ronda ${l.round} (versus): ` + l.duels.map((d) => `${d.winner_name} le ganó a ${d.loser_name} (${d.votes}–${d.loser_votes})`).join(" · ")
+        : `🏆 Ronda ${l.round}: ganó ${l.winner}. «${l.black}» → ${l.cards.map((t, i) => (l.golden && l.golden[i] ? "⭐ " : "") + t).join(" / ")}`
         + (l.mode === "vote" ? ` · 🗳️ ${l.votes} voto${l.votes === 1 ? "" : "s"}${l.tie ? " (desempate por sorteo)" : ""}` : "");
       const min = node("button", "—", "resmin");
       min.title = "Minimizar";
@@ -577,12 +662,13 @@
 
   function canSteal(s) {
     return s.state === "playing" && !s.blind_round && (s.steals_per_player ?? 0) > 0 && (s.me.steals_left ?? 0) > 0
-      && !s.me.has_played && !s.me.robbed_by && (!s.me.is_judge || s.vote_round);
+      && !s.me.has_played && !s.me.robbed_by && (!s.me.is_judge || s.vote_round)
+      && (!s.versus_round || s.me.in_duel_self);
   }
 
   function canStealFrom(s, p) {
     return canSteal(s) && p.id !== s.me.id && !p.robbed && !p.has_played && !p.being_robbed
-      && (s.hand_counts?.[p.id] ?? p.hand_count ?? 0) > 0 && (!p.is_judge || s.vote_round);
+      && (s.hand_counts?.[p.id] ?? p.hand_count ?? 0) > 0 && (!p.is_judge || s.vote_round) && (!s.versus_round || p.in_duel);
   }
 
   function startSteal(p) {
@@ -606,7 +692,11 @@
 
   function renderSteal(s, justOpened) {
     const box = $("steal");
-    if (stealTarget === null) { if (pickerOpen) renderStealPicker(s); return; }
+    if (stealTarget === null) {
+      if (pickerOpen) renderStealPicker(s);
+      else if (myopicOpen) renderMyopicPicker(s);
+      return;
+    }
     const p = s.players.find((x) => x.id === stealTarget);
     const ok = p && canSteal(s) && !p.has_played && (p.robbing_me || justOpened)
       && (s.hand_counts?.[p.id] ?? p.hand_count ?? 0) > 0;
@@ -682,8 +772,12 @@
       name.append(node("span", p.nickname + (p.id === s.me.id ? " (vos)" : "")));
       if (p.is_host) name.append(node("span", " 👑"));
       if (p.is_judge && s.state !== "lobby") name.append(node("span", " ⚖️"));
-      if (s.state === "playing" && !p.is_judge) name.append(node("span", p.has_played ? " ✅" : " ⏳"));
-      if (s.state === "judging" && s.vote_round) name.append(node("span", p.has_voted ? " ✅" : " ⏳"));
+      if (s.state === "playing" && p.myopic && !p.has_played) name.append(node("span", " 👓"));
+      if (s.state === "playing" && s.versus_round && p.in_duel) name.append(node("span", " ⚔️"));
+      if (s.state === "playing" && !p.is_judge && (!s.versus_round || p.in_duel)) name.append(node("span", p.has_played ? " ✅" : " ⏳"));
+      if (s.state === "judging" && s.vote_round) {
+        name.append(node("span", p.in_duel ? " ⚔️" : p.has_voted ? " ✅" : " ⏳"));
+      }
       if (!p.online) name.append(node("span", " 🔌"));
       if (matchPoint) name.append(node("div", "⚡ MATCH POINT", "mp-tag"));
       li.append(name);
@@ -786,108 +880,177 @@
   }
 
   // ---- reglas de la partida (el host las cambia en el lobby; los demás las ven) ----
-  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95], steals: [0, 5], blind_chance: [0, 100] };  // igual que en el servidor
+  const RANGES = { points_to_win: [1, 20], rerolls: [0, 10], golden: [0, 5], vote_chance: [5, 95], steals: [0, 5], blind_chance: [0, 100], versus_chance: [0, 100], myopic: [0, 5] };  // igual que en el servidor
 
   function setRule(values) {
     send({ action: "settings", values });
   }
 
-  // Fila "nombre  [−] valor [+]" (solo lectura si no sos el host)
-  function stepperRow(s, label, key, value, unit, step = 1) {
-    const row = node("div", undefined, "rule");
-    row.append(node("div", label, "rule-label"));
-    const ctl = node("div", undefined, "stepper");
-    const [min, max] = RANGES[key];
-    if (s.me.is_host) {
-      const minus = node("button", "−", "step");
-      minus.disabled = value - step < min;
-      minus.onclick = () => setRule({ [key]: value - step });
-      ctl.append(minus);
-    }
-    ctl.append(node("div", value + (unit ? " " + unit : ""), "rule-value"));
-    if (s.me.is_host) {
-      const plus = node("button", "+", "step");
-      plus.disabled = value + step > max;
-      plus.onclick = () => setRule({ [key]: value + step });
-      ctl.append(plus);
-    }
-    row.append(ctl);
-    return row;
+  // ---- sala de espera: modo de juego + tarjetas de habilidades + mazos ----
+  // Si existe static/img/skills/<clave>.svg (o .png) se usa como dibujo de la tarjeta; si no, el emoji.
+  const SKILL_IMG_DIR = "{% static 'img/mascot.svg' %}".replace(/[^/]*$/, "skills/");
+  const skillImg = new Map();  // clave -> "svg" | "png" | "none" (se aprende al cargar, para no reintentar en cada refresco)
+  let openTip = null;          // tarjeta cuya ayuda («!») está abierta
+
+  const SKILLS = [
+    { key: "points", icon: "🎯", label: "Puntos para ganar", field: "points_to_win", range: "points_to_win",
+      tip: "Cuántos puntos hacen falta para ganar la partida. Con pocos puntos la partida es corta; con muchos, más larga." },
+    { key: "golden", icon: "⭐", label: "Cartas doradas", field: "golden_per_player", range: "golden",
+      tip: "Cada jugador puede escribir su propia carta y jugarla como una respuesta más. El juez no sabe cuál es la dorada hasta que elige ganadora. "
+         + "Con «vale 2 puntos», ganar con una dorada suma el doble." },
+    { key: "steals", icon: "🦹", label: "Robos", field: "steals_per_player", range: "steals",
+      tip: "Elegís a un jugador y le robás una carta sin ver qué dice, antes de que juegue. Mientras lo robás, esa persona no puede jugar. "
+         + "A cada jugador solo se le puede robar una vez por ronda." },
+    { key: "rerolls", icon: "🔄", label: "Rerolleos", field: "rerolls_per_player", range: "rerolls",
+      tip: "Descartás una carta de tu mano y recibís otra al azar. Sirve cuando ninguna te queda bien con la carta negra." },
+    { key: "blind", icon: "🕶️", label: "Rondas de descarte", field: "blind_chance", range: "blind_chance", unit: "%", step: 5,
+      tip: "En ese porcentaje de rondas la carta negra es secreta: todos juegan la carta que menos les importe perder, "
+         + "después se revela y se vota entre todos. En esas rondas no hay dorada, rerolleos ni robos." },
+    { key: "myopic", icon: "👓", label: "Miopes", field: "myopic_per_player", range: "myopic",
+      tip: "Elegís a un jugador y le nublás la vista: durante esa ronda ve sus cartas borrosas y en otro orden, hasta que juegue. "
+         + "Hay que hacerlo antes de que juegue, y a cada jugador solo se le puede nublar una vez por ronda. "
+         + "No funciona en rondas de descarte ni con el juez." },
+    { key: "versus", icon: "⚔️", label: "Versus", field: "versus_chance", range: "versus_chance", unit: "%", step: 5,
+      tip: "En ese porcentaje de rondas se juegan duelos 1 contra 1: las parejas se arman al azar y se enfrentan de a una. En cada duelo "
+         + "los dos eligen carta y votan todos los demás. El ganador de cada duelo suma un punto. Solo se activa con cantidad PAR de jugadores (mínimo 4) "
+         + "y si nadie está en match point." },
+  ];
+
+  const MODES = [
+    ["classic", "Clásico", 0, "En cada ronda un jugador hace de juez: lee las respuestas y elige la mejor."],
+    ["random", "Sorpresa", 25, "Es como el clásico, pero en algunas rondas al azar no hay juez: todos juegan y todos votan la mejor. Nadie puede votar su propia carta."],
+    ["always", "Sin juez", 100, "No hay juez: en todas las rondas todos juegan y todos votan. Nadie puede votar su propia carta; si hay empate, se sortea."],
+  ];
+
+  function skillIconNode(sk) {
+    const wrap = node("div", undefined, "skillicon");
+    const known = skillImg.get(sk.key);
+    if (known === "none") { wrap.append(node("span", sk.icon, "skillemoji")); return wrap; }
+    const img = node("img");
+    img.alt = "";
+    img.src = SKILL_IMG_DIR + sk.key + "." + (known || "svg");
+    img.onload = () => { if (!known) skillImg.set(sk.key, img.src.endsWith(".png") ? "png" : "svg"); };
+    img.onerror = () => {
+      if (img.src.endsWith(".svg") && !known) { img.src = SKILL_IMG_DIR + sk.key + ".png"; return; }
+      skillImg.set(sk.key, "none");
+      img.replaceWith(node("span", sk.icon, "skillemoji"));
+    };
+    wrap.append(img);
+    return wrap;
   }
 
-  function renderRules(main, s) {
-    const box = node("div", undefined, "rules");
-    box.append(node("h3", "Reglas de la partida"));
+  // ◀ valor ▶ (solo el host cambia valores)
+  function triStepper(s, key, value, unit, step = 1) {
+    const ctl = node("div", undefined, "tristep");
+    const [min, max] = RANGES[key];
+    if (s.me.is_host) {
+      const l = node("button", "◀", "tri");
+      l.setAttribute("aria-label", "Menos");
+      l.disabled = value - step < min;
+      l.onclick = () => setRule({ [key]: value - step });
+      ctl.append(l);
+    }
+    ctl.append(node("div", value + (unit || ""), "trivalue"));
+    if (s.me.is_host) {
+      const r = node("button", "▶", "tri");
+      r.setAttribute("aria-label", "Más");
+      r.disabled = value + step > max;
+      r.onclick = () => setRule({ [key]: value + step });
+      ctl.append(r);
+    }
+    return ctl;
+  }
 
-    box.append(stepperRow(s, "🎯 Puntos para ganar", "points_to_win", s.points_to_win, ""));
-    if (s.me.is_host) {  // atajos para las duraciones más comunes
-      const chips = node("div", undefined, "chips");
-      for (const n of [3, 5, 7, 10]) {
-        const c = node("button", String(n), "chip" + (s.points_to_win === n ? " on" : ""));
-        c.onclick = () => setRule({ points_to_win: n });
-        chips.append(c);
+  function skillTile(s, sk) {
+    const value = sk.field ? (s[sk.field] ?? 0) : 0;
+    const off = sk.soon || (sk.key !== "points" && value === 0);
+    const tile = node("div", undefined, "skill" + (off ? " off" : "") + (sk.soon ? " soon" : ""));
+    const info = node("button", openTip === sk.key ? "✕" : "!", "infobtn");
+    info.title = "¿Qué suma esto al juego?";
+    info.setAttribute("aria-label", "¿Qué suma esto al juego?");
+    info.onclick = () => { openTip = openTip === sk.key ? null : sk.key; renderMain(state); };
+    tile.append(info, skillIconNode(sk), node("div", sk.label, "skilllabel"));
+    if (sk.soon) {
+      tile.append(node("div", "Próximamente", "soontag"));
+    } else {
+      tile.append(triStepper(s, sk.range, value, sk.unit, sk.step || 1));
+      if (sk.key === "points" && s.me.is_host) {  // atajos para las duraciones más comunes
+        const chips = node("div", undefined, "chips mini");
+        for (const n of [3, 5, 7, 10]) {
+          const c = node("button", String(n), "chip" + (s.points_to_win === n ? " on" : ""));
+          c.onclick = () => setRule({ points_to_win: n });
+          chips.append(c);
+        }
+        tile.append(chips);
       }
-      box.append(chips);
+      if (sk.key === "versus" && value > 0 && (s.players.length % 2 || s.players.length < 4)) {
+        tile.append(node("div", `Hoy son ${s.players.length}: hace falta una cantidad par (4 o más)`, "skillnote"));
+      }
+      if (sk.key === "golden") {  // la dorada vale doble: solo tiene sentido si hay doradas
+        const dbl = node("label", undefined, "dbl2" + (value === 0 ? " dim" : ""));
+        const chk = node("input");
+        chk.type = "checkbox";
+        chk.checked = s.golden_double && value > 0;
+        chk.disabled = !s.me.is_host || value === 0;
+        chk.onchange = () => setRule({ golden_double: chk.checked });
+        dbl.append(chk, node("span", " Vale 2 puntos"));
+        tile.append(dbl);
+      }
     }
-    box.append(stepperRow(s, "🔄 Cambios de carta por jugador", "rerolls", s.rerolls_per_player, ""));
-    box.append(stepperRow(s, "⭐ Cartas doradas por jugador", "golden", s.golden_per_player, ""));
-    box.append(stepperRow(s, "🦹 Robos de carta por jugador", "steals", s.steals_per_player ?? 0, ""));
-    box.append(stepperRow(s, "🕶️ Rondas de descarte (sorpresa)", "blind_chance", s.blind_chance ?? 0, "%", 5));
-    if ((s.blind_chance ?? 0) > 0) {
-      box.append(node("p", "En esas rondas la negra es secreta, se juega 1 sola carta (la que menos te importe), "
-        + "sin dorada, cambios ni robos, y después se vota entre todos.", "hint"));
+    if (openTip === sk.key) {
+      const tip = node("div", undefined, "tip");
+      tip.append(node("b", sk.label), node("p", sk.tip));
+      tile.append(tip);
     }
+    return tile;
+  }
 
-    // La dorada vale doble: solo tiene sentido si hay doradas
-    const dbl = node("label", undefined, "rule dbl" + (s.golden_per_player === 0 ? " off" : ""));
-    const chk = node("input");
-    chk.type = "checkbox";
-    chk.checked = s.golden_double && s.golden_per_player > 0;
-    chk.disabled = !s.me.is_host || s.golden_per_player === 0;
-    chk.onchange = () => setRule({ golden_double: chk.checked });
-    dbl.append(chk, node("span", " Ganar con una carta dorada vale 2 puntos"));
-    box.append(dbl);
-
-    // Cómo se elige la ganadora: con juez, rondas sorpresa de votación al azar, o siempre votación
+  function renderModePanel(main, s) {
     const mode = s.vote_chance === 0 ? "classic" : s.vote_chance === 100 ? "always" : "random";
-    box.append(node("h4", "Cómo se elige la ganadora", "rules-sub"));
-    const defs = [
-      ["classic", "👨‍⚖️ Con juez", 0],
-      ["random", "🎲 Sorpresa", mode === "random" ? s.vote_chance : 25],
-      ["always", "🗳️ Siempre votación", 100],
-    ];
-    const modes = node("div", undefined, "modes");
-    for (const [id, label, value] of defs) {
-      if (s.me.is_host) {
-        const b = node("button", label, "chip mode" + (mode === id ? " on" : ""));
-        b.onclick = () => setRule({ vote_chance: value });
-        modes.append(b);
-      } else if (mode === id) {
-        modes.append(node("div", label, "chip mode on"));
-      }
+    const panel = node("div", undefined, "modepanel");
+    const head = node("div", undefined, "modehead");
+    head.append(node("div", "MODO DE JUEGO", "modetitle"));
+    const seg = node("div", undefined, "segmented");
+    for (const [id, label, value] of MODES) {
+      const b = node("button", label, "seg" + (mode === id ? " on" : ""));
+      b.disabled = !s.me.is_host;
+      b.onclick = () => setRule({ vote_chance: id === "random" && mode === "random" ? s.vote_chance : value });
+      seg.append(b);
     }
-    box.append(modes);
+    head.append(seg);
+    panel.append(head);
+    panel.append(node("p", MODES.find((m) => m[0] === mode)[3], "modedesc"));
     if (mode === "random") {
-      box.append(stepperRow(s, "🎲 Probabilidad de ronda de votación", "vote_chance", s.vote_chance, "%", 5));
+      const row = node("div", undefined, "modeextra");
+      row.append(node("span", "🎲 Probabilidad de ronda sin juez"), triStepper(s, "vote_chance", s.vote_chance, "%", 5));
+      panel.append(row);
     }
-    box.append(node("p", {
-      classic: "En cada ronda un jugador hace de juez y elige la mejor respuesta.",
-      random: "En algunas rondas, al azar, no hay juez: todos juegan y todos votan la mejor. Nadie puede votar su propia carta.",
-      always: "No hay juez: en todas las rondas todos juegan y todos votan. Nadie puede votar su propia carta; si hay empate, se sortea.",
-    }[mode], "muted"));
+    main.append(panel);
+  }
 
-    box.append(node("p", s.golden_per_player > 0
-      ? "La carta dorada la escribe cada jugador y se juega como una respuesta más."
-      : "Sin cartas doradas en esta partida.", "muted"));
-    main.append(box);
+  let inviteTimer = null;
+  async function copyInvite(btn) {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      btn.textContent = "✅ ¡Copiado!";
+      clearTimeout(inviteTimer);
+      inviteTimer = setTimeout(() => { btn.textContent = "🔗 Invitar"; }, 2000);
+    } catch (e) {
+      prompt("Copiá el link:", inviteLink);  // si el navegador no deja usar el portapapeles
+    }
   }
 
   function renderLobby(main, s, keepFocus) {
-    main.append(node("h3", "Esperando jugadores"));
-    main.append(node("p", `Se necesitan al menos ${s.min_players} para empezar.`, "muted"));
+    renderModePanel(main, s);
 
-    main.append(node("h3", "Mazos de la sala"));
-    if (!s.decks.length) main.append(node("p", "Todavía no hay mazos.", "muted"));
+    const grid = node("div", undefined, "skills");
+    for (const sk of SKILLS) grid.append(skillTile(s, sk));
+    main.append(grid);
+
+    // Mazos de la sala
+    const decks = node("div", undefined, "deckpanel");
+    decks.append(node("h3", "Mazos de la sala"));
+    if (!s.decks.length) decks.append(node("p", "Todavía no hay mazos.", "muted"));
     const ul = node("ul", undefined, "decklist");
     for (const d of s.decks) {
       const li = node("li", `${d.name} — ${d.blacks} negras · ${d.whites} blancas `);
@@ -898,7 +1061,7 @@
       }
       ul.append(li);
     }
-    main.append(ul);
+    decks.append(ul);
 
     const whites = s.decks.reduce((n, d) => n + d.whites, 0);
     const blacks = s.decks.reduce((n, d) => n + d.blacks, 0);
@@ -907,64 +1070,73 @@
     else if (whites < s.needed_whites) {
       problem = `Hacen falta al menos ${s.needed_whites} cartas blancas para ${s.players.length} jugadores (hay ${whites}).`;
     }
-    if (problem) main.append(node("p", problem, "error"));
+    if (problem) decks.append(node("p", problem, "error"));
 
-    renderRules(main, s);
-
-    if (!s.me.is_host) {
-      main.append(node("p", "Esperá a que el host empiece la partida."));
-      return;
-    }
-
-    // Mazos propios o públicos que todavía no están en la sala
-    const inRoom = new Set(s.decks.map((d) => d.id));
-    const free = deckOptions.filter((o) => !inRoom.has(o.id));
-    if (free.length) {
-      const row = node("div", undefined, "formrow");
-      const sel = node("select");
-      for (const o of free) {
-        const op = node("option", o.name);
-        op.value = String(o.id);
-        sel.append(op);
+    let input = null;
+    if (s.me.is_host) {
+      // Mazos propios o públicos que todavía no están en la sala
+      const inRoom = new Set(s.decks.map((d) => d.id));
+      const free = deckOptions.filter((o) => !inRoom.has(o.id));
+      if (free.length) {
+        const row = node("div", undefined, "formrow");
+        const sel = node("select");
+        for (const o of free) {
+          const op = node("option", o.name);
+          op.value = String(o.id);
+          sel.append(op);
+        }
+        if (free.some((o) => String(o.id) === selectDraft)) sel.value = selectDraft;
+        sel.onchange = () => { selectDraft = sel.value; };
+        const add = node("button", "Agregar mazo");
+        add.onclick = () => send({ action: "add_deck", deck: Number(sel.value) });
+        row.append(sel, add);
+        decks.append(row);
       }
-      if (free.some((o) => String(o.id) === selectDraft)) sel.value = selectDraft;
-      sel.onchange = () => { selectDraft = sel.value; };
-      const add = node("button", "Agregar mazo");
-      add.onclick = () => send({ action: "add_deck", deck: Number(sel.value) });
-      row.append(sel, add);
-      main.append(row);
-    }
 
-    // Mazo compartido por otra persona (código)
-    const row2 = node("div", undefined, "formrow");
-    const input = node("input");
-    input.id = "deck-code";
-    input.placeholder = "Código de mazo compartido";
-    input.maxLength = 12;
-    input.value = codeDraft;
-    input.oninput = () => { codeDraft = input.value; };
-    const addCode = () => {
-      const code = input.value.trim();
-      if (!code) return;
-      send({ action: "add_deck", code });
-      codeDraft = "";
-      input.value = "";
-    };
-    input.onkeydown = (e) => { if (e.key === "Enter") addCode(); };
-    const addByCode = node("button", "Agregar por código");
-    addByCode.onclick = addCode;
-    row2.append(input, addByCode);
-    main.append(row2);
-    if (keepFocus) {
+      // Mazo compartido por otra persona (código)
+      const row2 = node("div", undefined, "formrow");
+      input = node("input");
+      input.id = "deck-code";
+      input.placeholder = "Código de mazo compartido";
+      input.maxLength = 12;
+      input.value = codeDraft;
+      input.oninput = () => { codeDraft = input.value; };
+      const addCode = () => {
+        const code = input.value.trim();
+        if (!code) return;
+        send({ action: "add_deck", code });
+        codeDraft = "";
+        input.value = "";
+      };
+      input.onkeydown = (e) => { if (e.key === "Enter") addCode(); };
+      const addByCode = node("button", "Agregar por código");
+      addByCode.onclick = addCode;
+      row2.append(input, addByCode);
+      decks.append(row2);
+      decks.append(node("p", "Los mazos se crean y se comparten desde «Mis mazos».", "muted"));
+    }
+    main.append(decks);
+
+    // Invitar y empezar
+    const actions = node("div", undefined, "lobbyactions");
+    const inv = node("button", "🔗 Invitar", "lobbybtn");
+    inv.onclick = () => copyInvite(inv);
+    actions.append(inv);
+    if (s.me.is_host) {
+      const start = node("button", "▶ Empezar", "lobbybtn go");
+      start.disabled = s.players.length < s.min_players || !!problem;
+      start.onclick = () => send({ action: "start_game" });
+      actions.append(start);
+    }
+    main.append(actions);
+    main.append(node("p", s.me.is_host
+      ? `Se necesitan al menos ${s.min_players} jugadores para empezar.`
+      : "Esperá a que el host empiece la partida.", "muted lobbyhint"));
+
+    if (keepFocus && input) {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     }
-    main.append(node("p", "Los mazos se crean y se comparten desde «Mis mazos».", "muted"));
-
-    const start = node("button", "Empezar partida", "bigbtn");
-    start.disabled = s.players.length < s.min_players || !!problem;
-    start.onclick = () => send({ action: "start_game" });
-    main.append(start);
   }
 
   function renderFinished(main, s) {
@@ -1024,7 +1196,7 @@
     const pill = node("div", undefined, "pill pendpill");
     let long, short, title = "";
     if (s.state === "playing") {
-      const pend = s.players.filter((x) => !x.is_judge && !x.has_played);
+      const pend = s.players.filter((x) => !x.is_judge && !x.has_played && (!s.versus_round || x.in_duel));
       title = pend.map((x) => x.nickname).join(", ");
       long = pend.length ? "⏳ Faltan: " + title : "✔ Todos jugaron";
       short = pend.length ? `⏳ Faltan ${pend.length}` : "✔ Todos jugaron";
@@ -1059,7 +1231,7 @@
       els.push(cardEl);
     }
     const n = els.length;
-    const fan = node("div", undefined, "fan");
+    const fan = node("div", undefined, "fan" + (s.me.myopic ? " myopic" : ""));
     fan.style.setProperty("--nm1", String(Math.max(1, n - 1)));
     const spread = Math.min(4.5, 32 / Math.max(1, n - 1));  // grados entre cartas contiguas
     els.forEach((el, i) => {
@@ -1092,7 +1264,57 @@
   // Selector de a quién robarle (la víctima se elige antes de ver su mano boca abajo)
   let pickerOpen = false;
   function openStealPicker() { pickerOpen = true; renderStealPicker(state); }
-  function closePicker() { pickerOpen = false; if (stealTarget === null) $("steal").hidden = true; }
+  function closePicker() { pickerOpen = false; myopicOpen = false; if (stealTarget === null) $("steal").hidden = true; }
+
+  // Miopes: elegir a quién dejar con la vista nublada (se aplica al toque, sin esperar nada)
+  let myopicOpen = false;
+  function canMyopic(s) {
+    return s.state === "playing" && !s.blind_round && (s.myopic_per_player ?? 0) > 0 && (s.me.myopic_left ?? 0) > 0
+      && (!s.versus_round || s.me.in_duel_self);
+  }
+  function canMyopicOn(s, p) {
+    return canMyopic(s) && p.id !== s.me.id && !p.is_judge && !p.has_played && !p.myopic && (!s.versus_round || p.in_duel);
+  }
+  function openMyopicPicker() { myopicOpen = true; renderMyopicPicker(state); }
+  function renderMyopicPicker(s) {
+    const box = $("steal");
+    if (!canMyopic(s)) { closePicker(); return; }
+    box.hidden = false;
+    box.replaceChildren();
+    const card = node("div", undefined, "stealbox myopicbox");
+    card.append(node("h3", "👓 ¿A quién le nublás la vista?"));
+    card.append(node("p", `Te quedan ${s.me.myopic_left} uso${s.me.myopic_left === 1 ? "" : "s"}. `
+      + "Esa persona va a ver sus cartas borrosas y mezcladas hasta que juegue.", "hint"));
+    const list = node("div", undefined, "targets");
+    for (const p of s.players.filter((x) => canMyopicOn(s, x))) {
+      const b = node("button", undefined, "target");
+      b.append(avatarNode(p.nickname), node("span", p.nickname));
+      b.onclick = () => { closePicker(); send({ action: "myopic", player: p.id }); };
+      list.append(b);
+    }
+    if (!list.children.length) list.append(node("p", "Ahora no hay a quién: ya jugaron o ya están miopes.", "hint"));
+    card.append(list);
+    const cancel = node("button", "Cancelar", "ghostbtn");
+    cancel.onclick = closePicker;
+    card.append(cancel);
+    box.append(card);
+  }
+
+  // Aviso para quien se queda miope (se muestra un instante)
+  let myopicAlertTimer = null;
+  function showMyopicAlert(by) {
+    const box = $("myopic");
+    box.replaceChildren();
+    const inner = node("div", undefined, "robbedbox");
+    inner.append(node("div", "👓", "robbedicon"), node("h2", "¡Te dejaron miope!"),
+                 node("p", `${by} te nubló la vista: tus cartas se ven borrosas y mezcladas hasta que juegues.`));
+    box.append(inner);
+    box.hidden = false;
+    clearTimeout(myopicAlertTimer);
+    const hide = () => { box.hidden = true; clearTimeout(myopicAlertTimer); };
+    box.onclick = hide;
+    myopicAlertTimer = setTimeout(hide, 3000);
+  }
   function renderStealPicker(s) {
     const box = $("steal");
     if (!canSteal(s)) { closePicker(); return; }
@@ -1118,7 +1340,25 @@
     box.append(card);
   }
 
+  // Cartelera de duelos: quién enfrenta a quién, cuál toca ahora y quién ganó los anteriores
+  function versusStrip(s) {
+    const v = s.versus;
+    const strip = node("div", undefined, "duelstrip");
+    v.pairs.forEach(([a, b], i) => {
+      const done = v.done[i];
+      const now = s.state === "judging" && i === v.index;
+      const chip = node("div", undefined, "duelchip" + (done ? " done" : "") + (now ? " now" : ""));
+      const na = node("span", a, "dn" + (done && done.winner === a ? " win" : ""));
+      const nb = node("span", b, "dn" + (done && done.winner === b ? " win" : ""));
+      chip.append(na, node("b", "⚔️"), nb);
+      if (done) chip.append(node("small", `${done.votes}–${done.loser_votes}${done.tie ? " 🎲" : ""}`));
+      strip.append(chip);
+    });
+    return strip;
+  }
+
   function renderBoard(main, s) {
+    s.me.in_duel_self = !!s.players.find((x) => x.id === s.me.id)?.in_duel;
     const board = node("div", undefined, "board");
     const pick = s.black.pick;
     const playing = s.state === "playing";
@@ -1137,17 +1377,30 @@
     board.append(bar);
 
     if (s.vote_round) {  // ronda sin juez: el aviso se anima solo la primera vez en cada ronda
-      const vtext = !s.blind_round
+      const vtext = s.versus_round
+        ? (playing
+            ? (s.me.in_duel_self
+                ? `⚔️ ¡Te toca! Duelo contra ${s.versus.duel.find((n) => n !== s.me.nickname)}: elegí tu carta.`
+                : `⚔️ Duelo ${s.versus.index + 1} de ${s.versus.pairs.length}: ${s.versus.duel.join(" vs ")} están eligiendo carta. Después votan los demás.`)
+            : s.me.in_duel_self
+              ? "⚔️ ¡Te toca! Estás en este duelo: votan los demás."
+              : "⚔️ Duelo en curso: votá la respuesta que más te guste.")
+        : !s.blind_round
         ? "🗳️ Ronda de votación: todos juegan y todos votan. No podés votar tu propia carta."
         : playing
           ? "🕶️ Ronda de descarte: la carta negra es sorpresa. Jugá la carta que MENOS te importe perder; se revela cuando todos jugaron."
           : "🕶️ Ronda de descarte: así quedó la negra. Votá la mejor respuesta (no la tuya).";
-      const vb = node("div", vtext, "votebanner" + (voteBannerRound !== s.round ? " pop" : ""));
-      voteBannerRound = s.round;
+      const vb = node("div", vtext, "votebanner" + (s.versus_round ? " versus" : "")
+                                       + (voteBannerRound !== s.round + (s.versus_round ? s.versus.index / 100 : 0) ? " pop" : ""));
+      voteBannerRound = s.round + (s.versus_round ? s.versus.index / 100 : 0);
       board.append(vb);
+      if (s.versus_round) board.append(versusStrip(s));
     }
 
-    const canAct = playing && !s.me.is_judge && !s.me.has_played;
+    if (playing && s.me.myopic && !s.me.has_played) {
+      board.append(node("div", `👓 ${s.me.myopic_by} te nubló la vista: tus cartas están borrosas y mezcladas. Pasá el mouse o seleccionalas para verlas un poco mejor.`, "myopicbanner"));
+    }
+    const canAct = playing && !s.me.is_judge && !s.me.has_played && (!s.versus_round || s.me.in_duel_self);
     rollBtn = null;
 
     // Escenario: herramientas | carta negra | jugadas de la mesa
@@ -1159,6 +1412,13 @@
         st.disabled = !canSteal(s) || !s.players.some((p) => canStealFrom(s, p));
         st.onclick = openStealPicker;
         tools.append(st);
+      }
+      if (s.myopic_per_player > 0 && !s.blind_round) {
+        const my = node("button", `👓 Miopear (${s.me.myopic_left ?? 0})`, "btn-steal btn-myopic");
+        my.disabled = !canMyopic(s) || !s.players.some((p) => canMyopicOn(s, p));
+        my.title = "Dejá miope a un rival: ve sus cartas borrosas y mezcladas";
+        my.onclick = openMyopicPicker;
+        tools.append(my);
       }
       if (s.rerolls_per_player > 0 && !s.blind_round) {
         const left = s.me.rerolls_left ?? 0;
@@ -1212,13 +1472,14 @@
         }
         const fresh = !seenSubs.has(sub.id);
         seenSubs.add(sub.id);
-        const canPick = voting ? !sub.mine : s.me.is_judge;  // en votación, la propia jugada no se puede votar
+        const canPick = voting ? (!sub.mine && !s.me.in_duel_self) : s.me.is_judge;  // en votación, la propia jugada no se puede votar
         const group = node("div", undefined, "sub" + (selectedSub === sub.id ? " selected" : "")
                                                     + (canPick ? " clickable" : "") + (sub.mine ? " mine" : "")
                                                     + (voting && s.me.vote === sub.id ? " voted" : "")
                                                     + (fresh && !voting ? " flipin" : ""));
         sub.cards.forEach((t) => group.append(cardNode(t, "white")));
         if (sub.mine) group.append(node("div", "Tu jugada", "subtag"));
+        else if (voting && s.me.in_duel_self) group.append(node("div", "Rival", "subtag"));
         else if (voting && s.me.vote === sub.id) group.append(node("div", "✅ Tu voto", "subtag"));
         if (canPick) {
           group.onclick = () => {
@@ -1235,7 +1496,9 @@
     // Acciones
     const actions = node("div", undefined, "actions");
     if (playing) {
-      if (s.me.is_judge) {
+      if (s.versus_round && !s.me.in_duel_self) {
+        actions.append(node("p", `⏳ Ahora juegan ${s.versus.duel.join(" y ")}. Esperá: después votás vos.`, "hint"));
+      } else if (s.me.is_judge) {
         actions.append(node("p", "⚖️ Sos el juez de esta ronda. Esperá a que los demás jueguen.", "hint"));
       } else if (s.me.has_played) {
         actions.append(node("p", "Ya jugaste. Esperando al resto…", "hint"));
@@ -1269,13 +1532,17 @@
       }
     } else if (s.vote_round) {
       const mine = s.me.vote;
-      const vote = node("button", mine ? "🗳️ Cambiar voto" : "🗳️ Votar", "bigbtn");
-      vote.disabled = selectedSub === null || selectedSub === mine;
-      vote.onclick = () => send({ action: "vote", submission: selectedSub });
-      actions.append(vote);
-      actions.append(node("p", mine
-        ? "Ya votaste, podés cambiar tu voto hasta que voten todos"
-        : "Tocá la respuesta que más te guste (no la tuya)", "hint"));
+      if (s.me.in_duel_self) {
+        actions.append(node("p", "⚔️ Estás en este duelo: esperá a que voten los demás.", "hint"));
+      } else {
+        const vote = node("button", mine ? "🗳️ Cambiar voto" : "🗳️ Votar", "bigbtn");
+        vote.disabled = selectedSub === null || selectedSub === mine;
+        vote.onclick = () => send({ action: "vote", submission: selectedSub });
+        actions.append(vote);
+        actions.append(node("p", mine
+          ? "Ya votaste, podés cambiar tu voto hasta que voten todos"
+          : "Tocá la respuesta que más te guste (no la tuya)", "hint"));
+      }
     } else if (s.me.is_judge) {
       const win = node("button", "🏆 Elegir ganadora", "bigbtn");
       win.disabled = selectedSub === null;
@@ -1294,7 +1561,7 @@
     board.append(actions);
 
     // Mano en abanico (solo mientras se juega, y no para el juez)
-    if (playing && !s.me.is_judge) {
+    if (playing && !s.me.is_judge && (!s.versus_round || s.me.in_duel_self)) {
       const wrap = node("div", undefined, "fanwrap" + (s.me.has_played ? " locked" : ""));
       if (s.me.has_played) {
         wrap.append(node("div", undefined, "fan fan-empty"));
@@ -1314,7 +1581,7 @@
     const keepGolden = !!ae && ae.id === "golden-input";
     const caret = keepGolden ? [ae.selectionStart, ae.selectionEnd] : [0, 0];
     main.replaceChildren();
-    main.className = (s.state === "lobby" || s.state === "finished") ? "panel" : "";
+    main.className = s.state === "finished" ? "panel" : s.state === "lobby" ? "lobby" : "";
 
     if (s.state === "lobby") { renderLobby(main, s, keepFocus); return; }
     if (s.state === "finished") { renderFinished(main, s); return; }
@@ -1342,6 +1609,14 @@
     if (state && state.black && state.black.secret && s.black && !s.black.secret && s.round === state.round) {
       decryptRound = s.round; decryptStart = performance.now();
     }
+    s.me.in_duel_self = !!s.players.find((x) => x.id === s.me.id)?.in_duel;
+    // Versus: terminó un duelo (no el último, ese llega con el resultado de la ronda): se muestra su resultado
+    if (state && !first && s.versus_round && state.versus_round && s.round === state.round
+        && s.versus && state.versus && s.versus.done.length > state.versus.done.length && s.black && s.black.text) {
+      showDuelReveal(s.versus.done[s.versus.done.length - 1], s.black.text, false);
+    }
+    if (state && !first && !state.me.myopic && s.me.myopic && s.round === state.round) showMyopicAlert(s.me.myopic_by);
+    if (!s.me.myopic || s.state !== "playing") $("myopic").hidden = true;
     state = s;
     const ids = new Set(s.me.hand.map((c) => c.id));
     const goldenOk = s.state === "playing" && !s.me.is_judge && !s.me.has_played
@@ -1353,7 +1628,7 @@
 
     $("round-pill").textContent =
       s.state === "lobby" ? "Lobby" : s.state === "finished" ? "Partida terminada"
-        : `Ronda ${s.round}` + (s.vote_round ? " · 🗳️ Votación" : "");
+        : `Ronda ${s.round}` + (s.versus_round ? " · ⚔️ Versus" : s.vote_round ? " · 🗳️ Votación" : "");
     $("goal-pill").hidden = s.state === "lobby";
     $("goal-pill").textContent = `A ${s.points_to_win} puntos`
       + (s.golden_double && s.golden_per_player > 0 ? " · ⭐ vale 2" : "");
