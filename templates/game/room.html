@@ -229,16 +229,37 @@
   }
 
   // ---- avatares: emoji + color determinísticos a partir del apodo ----
-  const AVATARS = ["🦆", "🐱", "🐶", "👽", "🦊", "🐸", "🐼", "🦉", "🐙", "🦄", "🐵", "🐢", "🦖", "🐧", "🐯", "🦁"];
+  const AVATARS = window.CARTAS_AVATARS || ["🦆", "🐱", "🐶", "👽", "🦊", "🐸", "🐼", "🦉", "🐙", "🦄", "🐵", "🐢", "🦖", "🐧", "🐯", "🦁"];
+  const avatarMap = new Map();  // apodo -> personaje que eligió (si no eligió, se le asigna uno según su apodo)
   function hash(str) {
     let h = 5381;
     for (const ch of str) h = ((h << 5) + h + ch.codePointAt(0)) | 0;
     return Math.abs(h);
   }
   function avatarNode(nick) {
-    const n = node("div", AVATARS[hash(nick) % AVATARS.length], "avatar");
-    n.style.background = `hsl(${hash(nick) % 360} 55% 38%)`;
+    const chosen = avatarMap.get(nick);
+    const n = node("div", chosen || AVATARS[hash(nick) % AVATARS.length], "avatar");
+    n.style.background = `hsl(${hash(chosen || nick) % 360} 55% 38%)`;
     return n;
+  }
+
+  // Elegir otro personaje desde la sala (tocando el propio en la lista de jugadores)
+  async function openAvatarPicker() {
+    const mine = avatarMap.get(state.me.nickname) || null;
+    const grid = node("div", undefined, "avgrid");
+    const cells = AVATARS.map((e) => {
+      const b = node("button", e, "avcell" + (e === mine ? " on" : ""));
+      b.type = "button";
+      b.onclick = () => {
+        try { localStorage.setItem("cartasAvatar", e); } catch (err) { /* sin almacenamiento */ }
+        avatarMap.set(state.me.nickname, e);
+        cells.forEach((c) => c.classList.toggle("on", c === b));
+        send({ action: "avatar", emoji: e });
+      };
+      grid.append(b);
+      return b;
+    });
+    await askConfirm({ icon: "🎭", title: "Elegí tu personaje", content: grid, ok: "Listo", cancel: "Cerrar" });
   }
 
   // ---- ranking y chat como panel lateral en pantallas chicas ----
@@ -766,7 +787,13 @@
       const matchPoint = inGame && s.state !== "finished" && goal > 1 && eff(p) === goal - 1;
       const li = node("li", undefined, "prow" + (p.online ? "" : " offline") + (matchPoint ? " matchpoint" : ""));
       li.dataset.pid = p.id;
-      li.append(avatarNode(p.nickname));
+      const av = avatarNode(p.nickname);
+      if (p.id === s.me.id) {
+        av.classList.add("editable");
+        av.title = "Cambiar mi personaje";
+        av.onclick = openAvatarPicker;
+      }
+      li.append(av);
 
       const name = node("div", undefined, "pname");
       name.append(node("span", p.nickname + (p.id === s.me.id ? " (vos)" : "")));
@@ -1598,6 +1625,11 @@
 
   function render(s) {
     const first = state === null;  // primer estado recibido (entrada o recarga)
+    for (const p of s.players) { if (p.avatar) avatarMap.set(p.nickname, p.avatar); else avatarMap.delete(p.nickname); }
+    if (first) {  // el personaje elegido en la pantalla de apodo se le avisa al servidor al entrar
+      const mine = window.cartasAvatarGet && window.cartasAvatarGet();
+      if (mine && s.me.avatar !== mine) { avatarMap.set(s.me.nickname, mine); send({ action: "avatar", emoji: mine }); }
+    }
     const justFinished = !first && s.state === "finished" && state.state !== "finished";
     const ingame = s.state === "playing" || s.state === "judging";
     document.querySelector(".layout").classList.toggle("game", ingame);

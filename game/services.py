@@ -11,6 +11,7 @@ from django.db.models.functions import Greatest
 from django.utils import timezone
 
 from decks.models import Card, Deck
+from .avatars import AVATARS
 from .models import Game, GameCard, Player, Vote
 
 HAND_SIZE = 7
@@ -941,6 +942,16 @@ def remove_deck(game_id, player_id, deck_id):
     game.decks.remove(deck_id)
 
 
+# ---------- personaje ----------
+
+@transaction.atomic
+def set_avatar(game_id, player_id, emoji):
+    """Cambia el personaje (emoji) del jugador. Solo se aceptan los de la lista."""
+    if emoji not in AVATARS:
+        raise GameError("Ese personaje no existe.")
+    Player.objects.filter(pk=player_id, game_id=game_id).update(avatar=emoji)
+
+
 # ---------- chat ----------
 
 def chat_author(game_id, player_id):
@@ -1077,6 +1088,7 @@ def snapshot(game_id, player_id):
             "rerolls_left": me.rerolls_left,
             "golden_left": me.golden_left,
             "steals_left": me.steals_left,
+            "avatar": me.avatar,
             "myopic_left": me.myopic_left,
             "myopic": _myopic_now(game, me),
             "myopic_by": me.myopic_by if _myopic_now(game, me) else None,
@@ -1091,6 +1103,7 @@ def snapshot(game_id, player_id):
             {"id": p.id, "nickname": p.nickname, "is_host": p.is_host, "score": p.score,
              "is_judge": p.id == judge_id, "has_played": p.id in played_ids,
              "has_voted": p.id in voted_ids,
+             "avatar": p.avatar,
              "in_duel": p.id in duel_ids,
              "myopic": _myopic_now(game, p),
              "hand_count": hand_counts.get(p.id, 0),

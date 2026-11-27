@@ -5,18 +5,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Cartas Arg{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'css/game.css' %}?v=26">
+  <link rel="stylesheet" href="{% static 'css/game.css' %}?v=30">
+  <script src="{% static 'js/avatars.js' %}?v=1"></script>
 </head>
 <body>
   <div class="wrap {% block wrapclass %}{% endblock %}">
     {% block header %}
     <header class="top">
       <h1 class="logo"><a href="{% url 'game:home' %}">Cartas <span>Arg</span></a></h1>
-      <nav><a href="{% url 'decks:list' %}">Mis mazos</a></nav>
+      <nav>
+        <a id="backroom" class="backroom" href="#" hidden>↩ Volver a la sala</a>
+        {% if request.resolver_match.view_name != 'decks:list' %}<a href="{% url 'decks:list' %}">Mis mazos</a>{% endif %}
+      </nav>
     </header>
     {% endblock %}
     {% for m in messages %}<div class="msg {{ m.tags }}">{{ m }}</div>{% endfor %}
     {% block content %}{% endblock %}
   </div>
+  <script src="{% static 'js/namepicker.js' %}?v=2"></script>
+  <script>
+    /* «Volver a la sala»: la sala abierta se recuerda en este navegador (la sala la borra al salir o si ya no existe) */
+    (function () {
+      var path = null;
+      try { path = localStorage.getItem("cartasRoom"); } catch (e) { return; }
+      if (!path || location.pathname === path) return;
+      var a = document.getElementById("backroom");
+      if (!a) {  // pantallas sin encabezado (el menú principal): botón flotante
+        a = document.createElement("a");
+        a.id = "backroom";
+        a.className = "backroom floating";
+        a.textContent = "↩ Volver a la sala";
+        document.body.append(a);
+      }
+      a.href = path;
+      a.hidden = false;
+    })();
+  </script>
 </body>
 </html>

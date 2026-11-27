@@ -125,6 +125,12 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
                     "type": "notice.message",
                     "text": f"🦹 {info['thief']} le robó una carta a {info['victim']}"})
 
+            elif action == "avatar":
+                emoji = content.get("emoji")
+                if not isinstance(emoji, str):
+                    raise GameError("Personaje inválido.")
+                await self.run(services.set_avatar, emoji)
+
             elif action == "myopic":
                 target = content.get("player")
                 if type(target) is not int:

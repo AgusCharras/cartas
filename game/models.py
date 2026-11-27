@@ -79,6 +79,7 @@ class Player(models.Model):
     locked_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     locked_at = models.DateTimeField(null=True, blank=True)
     robbed_round = models.PositiveSmallIntegerField(default=0)  # ronda en la que le robaron (solo 1 robo por ronda)
+    avatar = models.CharField(max_length=8, blank=True)         # personaje (emoji) que eligió; vacío = uno automático
     myopic_left = models.PositiveSmallIntegerField(default=0)   # veces que todavía puede dejar miope a alguien
     myopic_round = models.PositiveSmallIntegerField(default=0)  # ronda en la que lo dejaron miope (0 = ninguna)
     myopic_by = models.CharField(max_length=24, blank=True)     # quién lo dejó miope

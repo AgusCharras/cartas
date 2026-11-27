@@ -17,6 +17,8 @@ from .models import Card, Deck
 from .ownership import get_token, my_decks
 
 MAX_DECKS_PER_USER = 20
+PREVIEW_BLACKS = 6    # cartas negras que se muestran en la vista previa de cada mazo
+PREVIEW_WHITES = 12   # y blancas
 
 
 class ImportForm(forms.Form):
@@ -38,6 +40,14 @@ def deck_list(request):
         whites=Count("cards", filter=Q(cards__kind=Card.WHITE)),
         blacks=Count("cards", filter=Q(cards__kind=Card.BLACK)),
     ).order_by("-created_at")
+    decks = list(decks)
+    for d in decks:  # unas cartas al azar para la vista previa "barajando" (pocas, para no cargar la página)
+        sample = [{"kind": "black", "text": c.text, "pick": c.pick}
+                  for c in d.cards.filter(kind=Card.BLACK).order_by("?")[:PREVIEW_BLACKS]]
+        sample += [{"kind": "white", "text": c.text, "pick": 1}
+                   for c in d.cards.filter(kind=Card.WHITE).order_by("?")[:PREVIEW_WHITES]]
+        d.preview = sample
+        d.preview_id = f"preview-{d.pk}"
     return render(request, "decks/list.html", {"decks": decks})
 
 
