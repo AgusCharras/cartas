@@ -14,7 +14,7 @@ from game.models import Game
 from .editor import build_cards
 from .importer import DeckImportError, import_deck
 from .models import Card, Deck
-from .ownership import get_token, my_decks
+from .ownership import adopt_token, code_to_token, get_token, my_decks, token_to_code
 
 MAX_DECKS_PER_USER = 20
 PREVIEW_BLACKS = 6    # cartas negras que se muestran en la vista previa de cada mazo
@@ -190,3 +190,19 @@ def deck_preview(request, code):
         "whites": deck.cards.filter(kind=Card.WHITE).order_by("id"),
         "blacks": deck.cards.filter(kind=Card.BLACK).order_by("id"),
     })
+
+@rate_limit("recover", limit=15, window=3600)
+def recovery(request):
+    """Muestra el código de recuperación de este navegador y permite ingresar el de otro dispositivo."""
+    error = None
+    if request.method == "POST":
+        token = code_to_token(request.POST.get("code", ""))
+        if not token:
+            error = "Ese código no es válido. Revisá que esté completo (son 26 letras y números)."
+        else:
+            moved = adopt_token(request, token)
+            n = my_decks(request).count()
+            messages.success(request, f"Listo: ahora ves tus mazos en este dispositivo ({n}).")
+            return redirect("decks:list")
+    token = get_token(request, create=True)
+    return render(request, "decks/recovery.html", {"code": token_to_code(token), "error": error})

@@ -7,6 +7,7 @@
     <div>
       <a class="btn" href="{% url 'decks:new' %}">+ Crear mazo</a>
       <a class="btn ghost" href="{% url 'decks:import' %}">Importar JSON</a>
+      <a class="btn ghost" href="{% url 'decks:recovery' %}">🔑 Usar en otro dispositivo</a>
     </div>
   </div>
 
@@ -35,7 +36,7 @@
     <p>Todavía no tenés mazos. Creá uno o importá un JSON.</p>
   {% endif %}
 
-  <p class="muted">Tus mazos quedan guardados en este navegador. Exportalos para tener un respaldo.
+  <p class="muted">Tus mazos quedan asociados a este navegador. Para verlos desde otro dispositivo usá el código de recuperación (🔑). Exportalos también para tener un respaldo.
     Los que pasan 30 días sin editarse ni usarse se borran.</p>
 </div>
 

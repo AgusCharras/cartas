@@ -1044,3 +1044,12 @@ form.namecard button:not([type=button]) { border-radius: 999px; padding: .8rem 2
 .backroom.floating { position: fixed; top: .8rem; right: .8rem; z-index: 40; }
 .top nav { display: flex; gap: 1rem; align-items: center; }
 .top nav a.backroom { color: var(--accent-ink); text-decoration: none; }
+
+/* Código de recuperación de mazos */
+.recovery h3 { margin: 1rem 0 .3rem; }
+.codebox { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .6rem 0; }
+.codebox code { font-size: 1.15rem; font-weight: 800; letter-spacing: .08em; padding: .6rem .9rem; border-radius: 10px;
+  background: rgba(255,255,255,.06); border: 1px dashed rgba(255,255,255,.25); word-break: break-all; user-select: all; }
+.codeform { display: flex; gap: .6rem; flex-wrap: wrap; }
+.codeform input { flex: 1 1 280px; font-family: monospace; letter-spacing: .06em; text-transform: uppercase; }
+.recovery .sep { border: 0; border-top: 1px solid rgba(255,255,255,.12); margin: 1.2rem 0; }

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card recovery">
+  <div class="room-head">
+    <h2>🔑 Mazos en otro dispositivo</h2>
+    <a class="btn ghost" href="{% url 'decks:list' %}">← Mis mazos</a>
+  </div>
+
+  <h3>Tu código de recuperación</h3>
+  <p class="muted">Guardalo en un lugar seguro. Con este código cualquier dispositivo puede ver y editar tus mazos, así que no lo compartas.</p>
+  <div class="codebox">
+    <code id="rcode">{{ code }}</code>
+    <button type="button" class="btn" id="copycode">Copiar</button>
+  </div>
+
+  <hr class="sep">
+
+  <h3>Ya tengo un código</h3>
+  <p class="muted">Ingresá el código de tu otro dispositivo. Los mazos que tengas acá se suman a los de ese código.</p>
+  {% if error %}<div class="msg error">{{ error }}</div>{% endif %}
+  <form method="post" class="codeform" autocomplete="off">
+    {% csrf_token %}
+    <input type="text" name="code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX" maxlength="40" spellcheck="false" autocapitalize="characters" required>
+    <button class="btn" type="submit">Usar este código</button>
+  </form>
+</div>
+<script>
+document.getElementById('copycode').addEventListener('click', function () {
+  var t = document.getElementById('rcode').textContent.trim(), b = this;
+  var done = function () { b.textContent = '¡Copiado!'; setTimeout(function () { b.textContent = 'Copiar'; }, 1500); };
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(done, function () {});
+  else { var r = document.createRange(); r.selectNode(document.getElementById('rcode')); getSelection().removeAllRanges(); getSelection().addRange(r); document.execCommand('copy'); done(); }
+});
+</script>
+{% endblock %}
