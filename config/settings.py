@@ -89,6 +89,11 @@ DATABASES = {
     )
 }
 
+# Supabase Transaction pooler (puerto 6543): no admite cursores del lado del servidor
+# ni sentencias preparadas.
+if DATABASES["default"]["ENGINE"].endswith("postgresql"):
+    DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
+    DATABASES["default"].setdefault("OPTIONS", {})["prepare_threshold"] = None
 # Archivos estáticos
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
